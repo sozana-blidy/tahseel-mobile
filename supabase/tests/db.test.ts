@@ -1,0 +1,357 @@
+/**
+ * Database rule tests on a real PostgreSQL 16 with Supabase's auth emulated
+ * (supabase_emulation.sql). Each test gets a fresh database cloned from a
+ * migrated template. Calls run as role `authenticated` (or `anon`) with a JWT
+ * `sub` claim — exactly how Supabase evaluates RLS and auth.uid().
+ *
+ * Env: TAHSEEL_PG (default postgres://postgres@/postgres?host=/tmp/pgsock&port=54329)
+ */
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import pg from "pg";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { buildImportPlan } from "../../src/lib/importPlan";
+import { parseWorkbook } from "../../src/lib/parseWorkbook";
+import { readXlsx } from "../../src/lib/xlsx";
+
+const ADMIN = process.env.TAHSEEL_PG ?? "postgres://postgres@localhost:54329/postgres?host=/tmp/pgsock";
+const TPL = "tahseel_tpl";
+const root = path.resolve(import.meta.dirname, "..");
+const urlFor = (db: string) => ADMIN.replace(/\/postgres(\?|$)/, `/${db}$1`);
+
+let dbName = "";
+let pool: pg.Pool;
+const M = "2026-11";
+const NEXT = "2026-12";
+
+async function adminQuery(sql: string) {
+  const c = new pg.Client({ connectionString: ADMIN });
+  await c.connect();
+  try {
+    await c.query(sql);
+  } finally {
+    await c.end();
+  }
+}
+
+beforeAll(async () => {
+  await adminQuery(`drop database if exists ${TPL}`);
+  await adminQuery(`create database ${TPL}`);
+  const c = new pg.Client({ connectionString: urlFor(TPL) });
+  await c.connect();
+  await c.query(readFileSync(path.join(root, "tests/supabase_emulation.sql"), "utf8"));
+  for (const f of readdirSync(path.join(root, "migrations")).sort()) await c.query(readFileSync(path.join(root, "migrations", f), "utf8"));
+  await c.end();
+});
+
+let n = 0;
+beforeEach(async () => {
+  if (pool) await pool.end();
+  dbName = `tahseel_t${process.pid}_${++n}`;
+  await adminQuery(`create database ${dbName} template ${TPL}`);
+  pool = new pg.Pool({ connectionString: urlFor(dbName), max: 6 });
+});
+
+afterEach(async () => {
+  if (pool) await pool.end();
+  pool = undefined as unknown as pg.Pool;
+  if (dbName) await adminQuery(`drop database if exists ${dbName}`);
+});
+
+afterAll(async () => {
+  await adminQuery(`drop database if exists ${TPL}`);
+});
+
+/** Run SQL as a Supabase user (null = anon). Returns rows. */
+async function as<T = Record<string, unknown>>(uid: string | null, sql: string, params: unknown[] = []): Promise<T[]> {
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    await c.query(`set local role ${uid ? "authenticated" : "anon"}`);
+    await c.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify(uid ? { sub: uid, role: "authenticated" } : { role: "anon" })]);
+    const r = await c.query(sql, params);
+    await c.query("commit");
+    return r.rows as T[];
+  } catch (e) {
+    await c.query("rollback");
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+const one = async <T = Record<string, unknown>>(uid: string | null, sql: string, params: unknown[] = []) => (await as<T>(uid, sql, params))[0];
+const su = async (sql: string, params: unknown[] = []) => (await pool.query(sql, params)).rows;
+const key = () => `k-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+
+/* ---------------- fixture ---------------- */
+
+async function newUser(email: string): Promise<string> {
+  return (await su("insert into auth.users (email) values ($1) returning id", [email]))[0].id;
+}
+
+async function fixture() {
+  const managerId = await newUser("manager@tahseel.app");
+  await su("select public.make_manager('manager@tahseel.app', 'المدير', 'manager')");
+  await one(managerId, "select public.import_subscribers($1::jsonb)", [JSON.stringify([
+    { full_name: "علي أحمد عروس", father_name: "أحمد", username: "hnadi7", area: "الهنادي", speed_mbps: 4, package_label: "4M", monthly_amount: 200000 },
+    { full_name: "أحمد محمد", area: "الهنادي", speed_mbps: 2, package_label: "2M", monthly_amount: 100000 },
+    { full_name: "محمود خالد", area: "الهنادي", speed_mbps: 3, package_label: "3M", monthly_amount: 150000 },
+    { full_name: "نقطة خدمة", area: "الهنادي", package_label: "SPF", monthly_amount: 0, standing_exempt: true },
+    { full_name: "بدون سرعة", area: "الهنادي", monthly_amount: null },
+    { full_name: "فادي", area: "فديو", speed_mbps: 2, package_label: "2M", monthly_amount: 100000 },
+    { full_name: "فراس", area: "فديو", speed_mbps: 4, package_label: "4M", monthly_amount: 200000 },
+    { full_name: "كامل", area: "الخرنوبة", speed_mbps: 2, package_label: "2M", monthly_amount: 100000 },
+  ])]);
+  const areas = Object.fromEntries((await su("select name, id from public.areas")).map((r) => [r.name, r.id])) as Record<string, string>;
+  const subs = Object.fromEntries((await su("select full_name, id from public.subscribers")).map((r) => [r.full_name, r.id])) as Record<string, string>;
+
+  async function makeAgent(username: string, name: string, areaNames: string[], comp: [string, number] = ["none", 0], phone: string | null = null) {
+    const inv = await one<{ r: { code: string } }>(managerId, "select public.create_agent_invite($1, $2, $3::uuid[], $4, $5, $6) r",
+      [name, username, areaNames.map((a) => areas[a]), phone, comp[0], comp[1]]);
+    const uid = await newUser(`${username}@agents.tahseel.app`);
+    await one(uid, "select public.claim_agent_invite($1)", [inv.r.code]);
+    return uid;
+  }
+  const kadar = await makeAgent("ali.kadar", "علي قدار", ["الهنادي"], ["monthly_salary", 500000]);
+  const elia = await makeAgent("elia", "ايليا ضويا", ["فديو"], ["per_invoice", 5000]);
+  await one(managerId, "select public.open_month($1)", [M]);
+  return { managerId, areas, subs, kadar, elia, makeAgent };
+}
+
+const status = async (uid: string, sub: string, month = M) =>
+  (await one<{ status: string; remaining: string; paid: string }>(uid, "select status, remaining, paid from public.area_subscribers($1) where id = $2", [month, sub]));
+
+/* ---------------- tests ---------------- */
+
+describe("row-level security", () => {
+  it("anon and users without a profile see nothing; agents see only their own areas", async () => {
+    const f = await fixture();
+    await expect(as(null, "select * from public.subscribers")).rejects.toThrow(/permission denied/);
+    const stranger = await newUser("random@x.com");
+    expect(await as(stranger, "select * from public.subscribers")).toHaveLength(0);
+    await expect(as(stranger, "select * from public.area_subscribers($1)", [M])).rejects.toThrow(/غير مصرح/);
+
+    const kadarRows = await as<{ area_name: string }>(f.kadar, "select area_name from public.area_subscribers($1)", [M]);
+    expect(new Set(kadarRows.map((r) => r.area_name))).toEqual(new Set(["الهنادي"]));
+    expect(await as(f.kadar, "select * from public.subscribers where area_id = $1", [f.areas["فديو"]])).toHaveLength(0);
+    expect(await as(f.kadar, "select * from public.area_subscribers($1, $2)", [M, f.areas["فديو"]])).toHaveLength(0);
+    expect(await as(f.kadar, "select * from public.areas")).toHaveLength(1);
+    expect(await as(f.kadar, "select * from public.notifications")).toHaveLength(0);
+    expect(await as(f.kadar, "select * from public.audit_log")).toHaveLength(0);
+    expect(await as(f.kadar, "select * from public.profiles")).toHaveLength(1); // only himself
+    expect((await as(f.managerId, "select * from public.subscribers")).length).toBe(8);
+  });
+
+  it("nobody can write tables directly — only through functions", async () => {
+    const f = await fixture();
+    for (const uid of [f.kadar, f.managerId]) {
+      await expect(as(uid, "update public.subscribers set monthly_amount = 1")).rejects.toThrow(/permission denied/);
+      await expect(as(uid, "delete from public.payments")).rejects.toThrow(/permission denied/);
+      await expect(as(uid, "insert into public.agent_areas (agent_id, area_id) values ($1, $2)", [uid, f.areas["فديو"]])).rejects.toThrow(/permission denied/);
+    }
+    await expect(as(f.kadar, "select public.make_manager('x','y','z')")).rejects.toThrow(/permission denied/);
+  });
+});
+
+describe("agent invites", () => {
+  it("one-time code, username must match, areas cannot be shared — even if the agent has no phone", async () => {
+    const f = await fixture();
+    const inv = await one<{ r: { code: string } }>(f.managerId, "select public.create_agent_invite('مهند وطفة', 'mohanad', $1::uuid[]) r", [[f.areas["الخرنوبة"]]]);
+    expect(inv.r.code).toMatch(/^[A-Z2-9]{8}$/);
+    expect((await one<{ r: { full_name: string } }>(null, "select public.invite_info($1) r", [inv.r.code.toLowerCase()])).r.full_name).toBe("مهند وطفة");
+    const wrong = await newUser("someoneelse@agents.tahseel.app");
+    await expect(as(wrong, "select public.claim_agent_invite($1)", [inv.r.code])).rejects.toThrow(/لا يطابق/);
+    const ok = await newUser("mohanad@agents.tahseel.app");
+    await as(ok, "select public.claim_agent_invite($1)", [inv.r.code]);
+    const again = await newUser("mohanad2@agents.tahseel.app");
+    await expect(as(again, "select public.claim_agent_invite($1)", [inv.r.code])).rejects.toThrow(/مسبقاً|غير صالح/);
+    expect((await one<{ r: unknown }>(null, "select public.invite_info($1) r", [inv.r.code])).r).toBeNull();
+    // area already taken (agent ali.kadar has no phone → regression for composite-null check)
+    await expect(as(f.managerId, "select public.create_agent_invite('x', 'xyz', $1::uuid[])", [[f.areas["الهنادي"]]])).rejects.toThrow(/مرتبطة بمعتمد آخر/);
+    await expect(as(f.kadar, "select public.create_agent_invite('x', 'xyz', $1::uuid[])", [[f.areas["الهنادي"]]])).rejects.toThrow(/للمدير فقط/);
+  });
+});
+
+describe("agent «تم الدفع»", () => {
+  it("records the full invoice, is idempotent, refuses repeats and other areas, no per-payment notification", async () => {
+    const f = await fixture();
+    const k = key();
+    const r1 = await one<{ r: { amount: number; repeated: boolean } }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [f.subs["علي أحمد عروس"], M, k]);
+    expect(r1.r).toMatchObject({ amount: 200000, repeated: false });
+    const r2 = await one<{ r: { repeated: boolean } }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [f.subs["علي أحمد عروس"], M, k]);
+    expect(r2.r.repeated).toBe(true);
+    await expect(as(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["علي أحمد عروس"], M, key()])).rejects.toThrow(/مدفوع مسبقاً/);
+    await expect(as(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["فادي"], M, key()])).rejects.toThrow(/ليس من منطقتك/);
+    await expect(as(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["بدون سرعة"], M, key()])).rejects.toThrow(/سعر/);
+    expect((await su("select count(*)::int c from public.payments"))[0].c).toBe(1);
+    expect(await as(f.managerId, "select * from public.notifications")).toHaveLength(0);
+    // agent cannot undo
+    const pid = (await su("select id from public.payments"))[0].id;
+    await expect(as(f.kadar, "select public.manager_reverse('payment', $1, 'خطأ', $2)", [pid, key()])).rejects.toThrow(/للمدير فقط/);
+  });
+
+  it("two phones tapping at the same moment → exactly one payment", async () => {
+    const f = await fixture();
+    const results = await Promise.allSettled(
+      Array.from({ length: 5 }, () => as(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["أحمد محمد"], M, key()])),
+    );
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    expect((await su("select coalesce(sum(amount),0)::int s from public.payments"))[0].s).toBe(100000);
+  });
+
+  it("a disabled agent can do nothing", async () => {
+    const f = await fixture();
+    await as(f.managerId, "select public.set_agent_active($1, false)", [f.kadar]);
+    expect(await as(f.kadar, "select * from public.subscribers")).toHaveLength(0);
+    await expect(as(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["أحمد محمد"], M, key()])).rejects.toThrow(/غير مفعّل/);
+  });
+});
+
+describe("manager operations", () => {
+  it("partial + agent remainder, overpay blocked, agentless area needs manager cash, Sham Cash ref unique, reversal", async () => {
+    const f = await fixture();
+    await as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'manager_cash', $3)", [f.subs["محمود خالد"], M, key()]);
+    expect(await status(f.managerId, f.subs["محمود خالد"])).toMatchObject({ status: "partial", remaining: "100000" });
+    const r = await one<{ r: { amount: number } }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [f.subs["محمود خالد"], M, key()]);
+    expect(r.r.amount).toBe(100000);
+    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, 300000, 'manager_cash', $3)", [f.subs["فراس"], M, key()])).rejects.toThrow(/أكبر من المتبقي/);
+    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, null, 'agent_cash', $3)", [f.subs["كامل"], M, key()])).rejects.toThrow(/بدون معتمد/);
+    await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فادي"], M, key()]);
+    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فراس"], M, key()])).rejects.toThrow(/مسجّل مسبقاً/);
+    const pid = (await su("select id from public.payments where reference = 'SC-1'"))[0].id;
+    await as(f.managerId, "select public.manager_reverse('payment', $1, 'رقم خاطئ', $2)", [pid, key()]);
+    expect((await status(f.managerId, f.subs["فادي"])).status).toBe("unpaid");
+    await expect(as(f.managerId, "select public.manager_reverse('payment', $1, 'مرة ثانية', $2)", [pid, key()])).rejects.toThrow(/مسبقاً/);
+    // the same reference is free again after its payment was reversed
+    await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فادي"], M, key()]);
+  });
+
+  it("exempt this month, speed change re-prices only an untouched invoice, disconnect and reconnect", async () => {
+    const f = await fixture();
+    await as(f.managerId, "select public.set_month_exempt($1, $2, 'عطل', $3)", [f.subs["أحمد محمد"], M, key()]);
+    expect((await status(f.managerId, f.subs["أحمد محمد"])).status).toBe("exempt");
+    expect((await status(f.managerId, f.subs["نقطة خدمة"])).status).toBe("exempt"); // SPF
+    expect((await status(f.managerId, f.subs["بدون سرعة"])).status).toBe("no_price");
+
+    const up = (sub: string, speed: number) =>
+      one<{ r: { monthly_amount: number; repriced: boolean } }>(f.managerId, "select public.update_subscriber($1, $2, null, null, $3, false, null, $4) r", [sub, "x", speed, M]);
+    expect((await up(f.subs["فراس"], 8)).r).toMatchObject({ monthly_amount: 400000, repriced: true });
+    expect((await status(f.managerId, f.subs["فراس"])).remaining).toBe("400000");
+    await one(f.elia, "select public.agent_mark_paid($1, $2, $3)", [f.subs["فادي"], M, key()]);
+    expect((await up(f.subs["فادي"], 10)).r).toMatchObject({ monthly_amount: 500000, repriced: false });
+    expect((await su("select package_label from public.subscribers where id = $1", [f.subs["فادي"]]))[0].package_label).toBe("10M");
+    // setting a speed for the no-price subscriber
+    expect((await up(f.subs["بدون سرعة"], 2)).r.monthly_amount).toBe(100000);
+
+    await as(f.managerId, "select public.disconnect_subscriber($1, $2)", [f.subs["كامل"], NEXT]);
+    await as(f.managerId, "select public.open_month($1)", [NEXT]);
+    expect((await su("select count(*)::int c from public.invoices where subscriber_id = $1 and month = $2", [f.subs["كامل"], NEXT]))[0].c).toBe(0);
+    expect((await su("select count(*)::int c from public.invoices where subscriber_id = $1 and month = $2", [f.subs["فادي"], NEXT]))[0].c).toBe(1);
+    expect((await su("select amount::int from public.invoices where subscriber_id = $1 and month = $2", [f.subs["فادي"], NEXT]))[0].amount).toBe(500000);
+    await as(f.managerId, "select public.reconnect_subscriber($1)", [f.subs["كامل"]]);
+    expect((await one<{ r: { issued: number } }>(f.managerId, "select public.open_month($1) r", [NEXT])).r.issued).toBe(1);
+  });
+
+  it("a speed change re-prices an invoice whose only payment was reversed", async () => {
+    const f = await fixture();
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["أحمد محمد"], M, key()]);
+    const pid = (await su("select id from public.payments"))[0].id;
+    const up = () => one<{ r: { repriced: boolean } }>(f.managerId, "select public.update_subscriber($1, 'أحمد محمد', null, null, 8, false, null, $2) r", [f.subs["أحمد محمد"], M]);
+    expect((await up()).r.repriced).toBe(false);
+    await as(f.managerId, "select public.manager_reverse('payment', $1, 'خطأ', $2)", [pid, key()]);
+    await as(f.managerId, "select public.update_subscriber($1, 'أحمد محمد', null, null, 2, false, null, null)", [f.subs["أحمد محمد"]]);
+    expect((await up()).r.repriced).toBe(true);
+    expect(await status(f.managerId, f.subs["أحمد محمد"])).toMatchObject({ status: "unpaid", remaining: "400000" });
+  });
+
+  it("import is blocked once invoices exist", async () => {
+    const f = await fixture();
+    await expect(as(f.managerId, "select public.import_subscribers('[{\"full_name\":\"x\",\"area\":\"y\"}]'::jsonb)")).rejects.toThrow(/بعد إصدار الفواتير/);
+  });
+});
+
+describe("agent cash and compensation", () => {
+  it("collected − delivered − approved deductions = holding; salary paid separately doesn't change it", async () => {
+    const f = await fixture();
+    for (const s of ["علي أحمد عروس", "أحمد محمد", "محمود خالد"]) await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs[s], M, key()]);
+    await as(f.managerId, "select public.record_agent_tx($1, $2, $3, 'delivery', 300000, $4)", [f.kadar, f.areas["الهنادي"], M, key()]);
+    const comp = await one<{ r: { due: number; remaining: number } }>(f.managerId, "select public.agent_compensation($1, $2) r", [f.kadar, M]);
+    expect(comp.r).toMatchObject({ due: 500000, remaining: 500000 });
+    await as(f.managerId, "select public.record_agent_tx($1, $2, $3, 'deduction', 100000, $4)", [f.kadar, f.areas["الهنادي"], M, key()]);
+    await as(f.managerId, "select public.record_agent_tx($1, null, $2, 'salary_paid', 400000, $3)", [f.kadar, M, key()]);
+    const cash = await one<{ collected: string; delivered: string; deductions: string; holding: string; collected_count: string }>(
+      f.managerId, "select * from public.agent_cash($1) where agent_id = $2", [M, f.kadar]);
+    expect(cash).toMatchObject({ collected: "450000", collected_count: "3", delivered: "300000", deductions: "100000", holding: "50000" });
+    expect((await one<{ r: { remaining: number } }>(f.managerId, "select public.agent_compensation($1, $2) r", [f.kadar, M])).r.remaining).toBe(0);
+    // agent sees only his own cash rows
+    expect((await as(f.kadar, "select * from public.agent_cash($1)", [M])).length).toBe(1);
+    expect((await as(f.elia, "select * from public.agent_cash($1) where agent_id = $2", [M, f.kadar])).length).toBe(0);
+  });
+
+  it("per-invoice commission counts each invoice once, only when it went through the agent", async () => {
+    const f = await fixture();
+    await as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'agent_cash', $3)", [f.subs["فادي"], M, key()]);
+    await one(f.elia, "select public.agent_mark_paid($1, $2, $3)", [f.subs["فادي"], M, key()]); // 2 installments → 1 invoice
+    await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'X9')", [f.subs["فراس"], M, key()]); // company only → none
+    const c = await one<{ r: { invoices: number; due: number } }>(f.managerId, "select public.agent_compensation($1, $2) r", [f.elia, M]);
+    expect(c.r).toMatchObject({ invoices: 1, due: 5000 });
+  });
+});
+
+describe("daily summary (replaces per-payment notifications)", () => {
+  it("one line per area per day with the agent's total; reversals net out; tap target lists the payments", async () => {
+    const f = await fixture();
+    for (const n of ["علي أحمد عروس", "أحمد محمد"]) await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs[n], M, key()]);
+    await one(f.elia, "select public.agent_mark_paid($1, $2, $3)", [f.subs["فادي"], M, key()]);
+    await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-9')", [f.subs["فراس"], M, key()]);
+    const fadiPay = (await su("select id from public.payments where subscriber_id = $1", [f.subs["فادي"]]))[0].id;
+    await as(f.managerId, "select public.manager_reverse('payment', $1, 'خطأ', $2)", [fadiPay, key()]);
+
+    const lines = await as<{ area_name: string; agent_name: string; amount: string; invoices: string; day: string }>(
+      f.managerId, "select * from public.daily_collections(7)");
+    expect(lines.map((l) => [l.area_name, l.agent_name, l.amount, l.invoices])).toEqual([["الهنادي", "علي قدار", "300000", "2"]]);
+    const day = (await su("select (now() at time zone 'Asia/Damascus')::date::text d"))[0].d;
+    const list = await as<{ full_name: string; amount: string }>(f.managerId, "select * from public.day_payments($1, $2::date)", [f.areas["الهنادي"], day]);
+    expect(list.map((x) => x.full_name).sort()).toEqual(["أحمد محمد", "علي أحمد عروس"]);
+    await expect(as(f.kadar, "select * from public.daily_collections(7)")).rejects.toThrow(/للمدير فقط/);
+  });
+
+  it("the list shows how each invoice was paid", async () => {
+    const f = await fixture();
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["أحمد محمد"], M, key()]);
+    await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فراس"], M, key()]);
+    await as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'manager_cash', $3)", [f.subs["محمود خالد"], M, key()]);
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["محمود خالد"], M, key()]);
+    const via = Object.fromEntries((await as<{ full_name: string; paid_via: string | null }>(f.managerId, "select full_name, paid_via from public.area_subscribers($1)", [M])).map((r) => [r.full_name, r.paid_via]));
+    expect(via).toMatchObject({ "أحمد محمد": "agent_cash", "فراس": "shamcash", "محمود خالد": "agent_cash,manager_cash", "فادي": null });
+  });
+});
+
+describe("overview", () => {
+  it("area totals match the rows", async () => {
+    const f = await fixture();
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["علي أحمد عروس"], M, key()]);
+    const h = await one<{ expected: string; paid: string; remaining: string; paid_count: string; unpaid_count: string; agent_name: string }>(
+      f.managerId, "select * from public.area_overview($1) where area_name = 'الهنادي'", [M]);
+    expect(h).toMatchObject({ expected: "450000", paid: "200000", remaining: "250000", paid_count: "1", unpaid_count: "2", agent_name: "علي قدار" });
+    const agentView = await as(f.kadar, "select * from public.area_overview($1)", [M]);
+    expect(agentView).toHaveLength(1);
+  });
+});
+
+// Real company file (personal data — never committed): set TAHSEEL_REAL_XLSX to its path.
+const REAL = process.env.TAHSEEL_REAL_XLSX;
+describe.skipIf(!REAL || !existsSync(REAL))("import of the real workbook", () => {
+  it("imports 834 subscribers in 12 areas and issues 106,100,000 for the month", async () => {
+    const managerId = await newUser("manager@tahseel.app");
+    await su("select public.make_manager('manager@tahseel.app', 'المدير', 'manager')");
+    const plan = buildImportPlan(parseWorkbook(readXlsx(new Uint8Array(readFileSync(REAL!)))));
+    const r = await one<{ r: { imported: number; areas: number } }>(managerId, "select public.import_subscribers($1::jsonb) r", [JSON.stringify(plan.rows)]);
+    expect(r.r).toEqual({ imported: 834, areas: 12 });
+    const o = await one<{ r: { issued: number; total: number; no_price: number } }>(managerId, "select public.open_month($1) r", [M]);
+    expect(o.r).toMatchObject({ issued: 830, total: 106_100_000, no_price: 4 });
+    const areas = (await su("select name from public.areas order by name")).map((x) => x.name);
+    expect(areas).toContain("ضهر السرياني");
+    expect(areas).toContain("الفاخورة");
+  });
+});
