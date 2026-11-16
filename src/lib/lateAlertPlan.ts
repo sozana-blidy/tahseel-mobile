@@ -2,6 +2,7 @@
 
 export interface LateRow {
   id: number;
+  kind?: string;
   title: string;
   body: string;
 }

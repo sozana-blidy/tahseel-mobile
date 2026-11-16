@@ -3,6 +3,7 @@ import { AppState } from "react-native";
 import { emitDataChanged, onDataChanged } from "./bus";
 import { currentMonth } from "./months";
 import { checkLateAlerts } from "./lateAlerts";
+import { refreshEveWarning } from "./eveWarning";
 import { refreshTonight } from "./reminders";
 import { q } from "./rpc";
 import { supabase } from "./supabase";
@@ -63,7 +64,10 @@ export function ManagerProvider({ children }: { children: ReactNode }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const soon = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => void refreshTonight(), 5000);
+      timer = setTimeout(() => {
+        void refreshTonight();
+        void refreshEveWarning(); // N in the 20:00 eve-of-cutoff warning
+      }, 5000);
     };
     const offData = onDataChanged(soon);
     void checkLateAlerts(); // catch up on start (first run only sets the starting point)

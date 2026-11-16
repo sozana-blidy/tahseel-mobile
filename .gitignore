@@ -58,3 +58,4 @@ yarn-error.*
 /*.rsc
 /*.sql
 router-review*.xlsx
+supabase/.temp/

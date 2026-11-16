@@ -629,3 +629,314 @@ describe.skipIf(!REAL || !existsSync(REAL))("import of the real workbook", () =>
     expect(areas).toContain("الفاخورة");
   });
 });
+
+/* ---------------- router automation, dry-run (0008) ---------------- */
+
+describe("router automation (dry-run)", () => {
+  const BEFORE = "2026-11-24T23:59:00+03:00";
+  const EVE = "2026-11-24T20:00:00+03:00";
+  const T0 = "2026-11-25T00:01:00+03:00"; // first run after the cutoff (25, 00:00 Damascus)
+  const plus = (iso: string, min: number) => new Date(new Date(iso).getTime() + min * 60_000).toISOString();
+
+  type Verdict = { u: string; action: string; reason: string };
+  type SyncOut = { ok: boolean; mode: string; dry: boolean; gate: string | null; check?: string[]; actions?: Verdict[]; would?: Verdict[]; batch?: number | null };
+  type RouterState = Record<string, { e?: boolean; d?: boolean }>;
+  type Fx = Awaited<ReturnType<typeof fixture>>;
+
+  const sync = async (router: string, report: object, when: string) =>
+    (await su("select public._router_sync($1, $2::jsonb, $3::timestamptz) r", [router, JSON.stringify(report), when]))[0].r as SyncOut;
+
+  /** One router run: A (candidates) → read each name on the "router" → B (observations). Default: exists, enabled. */
+  async function routerRun(router: string, when: string, state: RouterState = {}, extra: object[] = [], dry = true) {
+    const a = await sync(router, { phase: "candidates", dry }, when);
+    const obs = [...(a.check ?? []).map((u) => ({ u, e: state[u]?.e ?? true, d: state[u]?.d ?? false })), ...extra];
+    const b = await sync(router, { phase: "report", dry, obs }, when);
+    const pick = (action: string) => (b.would ?? []).filter((w) => w.action === action).map((w) => w.u);
+    return { ...b, check: a.check ?? [], gateA: a.gate, disables: pick("disable"), enables: pick("enable") };
+  }
+  const logRows = (where = "true", params: unknown[] = []) =>
+    su(`select router_id, username, action, reason, message, batch_no, new_after_cutoff from public.automation_log where ${where} order by id`, params);
+  const pay = (f: Fx, sub: string, month = M) =>
+    one(f.managerId, "select public.manager_record_payment($1, $2, null, 'manager_cash', $3)", [sub, month, key()]);
+
+  async function scope(areaNames: string[], usernames: Record<string, string>, subs: Record<string, string>) {
+    await su("update public.settings set value = (select coalesce(string_agg(id::text, ','), '') from public.areas where name = any($1)) where key = 'automation_area_ids'", [areaNames]);
+    for (const [name, u] of Object.entries(usernames)) await su("update public.subscribers set username = $2 where id = $1", [subs[name], u]);
+  }
+  async function addSubs(f: Fx, area: string, rows: [string, string | null][]) {
+    const ids: Record<string, string> = {};
+    for (const [name, u] of rows) {
+      ids[name] = (await one<{ r: { id: string } }>(f.managerId, "select public.add_subscriber($1, $2, null, null, $3, 2, false) r", [f.areas[area], name, u])).r.id;
+    }
+    await one(f.managerId, "select public.open_month($1)", [M]);
+    return ids;
+  }
+
+  /** In scope: الهنادي + فديو. Only mahmoud.h and firas.v should ever be disconnected. */
+  async function rulesFixture() {
+    const f = await fixture();
+    await scope(["الهنادي", "فديو"], { "أحمد محمد": "ahmad.h", "محمود خالد": "mahmoud.h", "نقطة خدمة": "spf.h", "فادي": "fadi.v", "فراس": "firas.v", "كامل": "kamel.k" }, f.subs);
+    const extra = await addSubs(f, "فديو", [["خليل", "khalil.v"], ["بلا اسم دخول", null]]);
+    const noauto = await addSubs(f, "الهنادي", [["ممنوع الفصل", "noauto.h"]]);
+    await pay(f, f.subs["علي أحمد عروس"]);                                                                    // paid
+    await as(f.managerId, "select public.set_month_exempt($1, $2, 'عطل', $3)", [f.subs["أحمد محمد"], M, key()]); // exempt this month
+    await one(f.managerId, "select public.defer_invoice($1, $2, $3)", [f.subs["فادي"], M, key()]);              // deferred
+    await as(f.managerId, "select public.disconnect_subscriber($1, $2)", [extra["خليل"], NEXT]);               // «فك»
+    await as(f.managerId, "select public.set_no_auto_disconnect($1, true)", [noauto["ممنوع الفصل"]]);          // «لا يُفصل»
+    // unpaid but never: spf.h (SPF), «بلا اسم دخول» (no username), kamel.k (الخرنوبة — out of scope)
+    return f;
+  }
+
+  it("decision rules: paid, exempt, SPF, deferred, «فك», «لا يُفصل», no username, out of scope, not our account", async () => {
+    const f = await rulesFixture();
+    await expect(as(f.kadar, "select public.set_no_auto_disconnect($1, true)", [f.subs["فراس"]])).rejects.toThrow(/للمدير فقط/);
+
+    const pre = await routerRun("1100", BEFORE);
+    expect(pre).toMatchObject({ gateA: "before_cutoff", check: [], actions: [], would: [] });
+
+    // dry=false from a (future) live script changes nothing while the mode is dry_run: actions stay empty
+    const r1 = await routerRun("1100", T0, {}, [{ u: "99x", e: true, d: false }, { u: "kamel.k", e: true, d: false }], false);
+    expect(r1.check).toEqual(["mahmoud.h", "firas.v"]);
+    expect(r1.actions).toEqual([]);
+    expect(r1.would).toEqual([
+      { u: "mahmoud.h", action: "disable", reason: "unpaid" },
+      { u: "firas.v", action: "disable", reason: "unpaid" },
+    ]);
+    const lines = await logRows("action = 'would_disable'");
+    expect(lines).toHaveLength(2);
+    expect(lines[0].message).toMatch(/^كان سيتم فصل mahmoud\.h \(.+\) على سيرفر 1100 — السبب: لم يدفع فاتورة 2026-11 \(الدفعة 1\)$/);
+    expect(await logRows("username in ('99x', 'kamel.k')")).toEqual([]);
+
+    // next run, same day: nothing new, nothing logged twice
+    const r2 = await routerRun("1100", plus(T0, 5));
+    expect(r2).toMatchObject({ check: [], would: [] });
+    expect(await logRows("action = 'would_disable'")).toHaveLength(2);
+
+    // the other server acts on its own copy: one missing there, one disabled by hand there
+    const r3 = await routerRun("2116", T0, { "firas.v": { e: false }, "mahmoud.h": { d: true } });
+    expect(r3.would).toEqual([]);
+    const l2116 = await logRows("router_id = '2116'");
+    expect(l2116).toMatchObject([
+      { username: "mahmoud.h", action: "skipped", reason: "manual_disabled" },
+      { username: "firas.v", action: "skipped", reason: "not_found" },
+    ]);
+    expect(l2116[0].message).toContain("معطّل يدوياً — لن يُلمس");
+    expect(l2116[1].message).toContain("غير موجود على السيرفر 2116");
+  });
+
+  it("re-enables only accounts Tahseel disabled, on the next poll after payment; manual ones never", async () => {
+    const f = await rulesFixture();
+    await routerRun("1100", T0);                                  // mahmoud + firas (simulated)
+    await routerRun("2116", T0, { "mahmoud.h": { d: true } });    // firas simulated; mahmoud disabled by hand → not ours
+    await pay(f, f.subs["محمود خالد"]);
+    await pay(f, f.subs["فراس"]);
+
+    // on 1100 someone has since disabled firas by hand → it is not ours any more
+    const r = await routerRun("1100", plus(T0, 5), { "firas.v": { d: true } });
+    expect([...r.check].sort()).toEqual(["firas.v", "mahmoud.h"]);
+    expect(r.would).toEqual([{ u: "mahmoud.h", action: "enable", reason: "paid" }]);
+    expect(r.actions).toEqual([]);
+    const en = await logRows("action = 'would_enable'");
+    expect(en).toHaveLength(1);
+    expect(en[0].message).toMatch(/^كان سيتم إعادة تفعيل mahmoud\.h \(.+\) على سيرفر 1100 بعد الدفع الساعة \d\d:\d\d$/);
+    expect(await logRows("router_id = '1100' and action = 'skipped'")).toMatchObject([{ username: "firas.v", reason: "manual_disabled" }]);
+
+    const s = await routerRun("2116", plus(T0, 5));
+    expect(s.check).toEqual(["firas.v"]); // mahmoud was never ours on 2116
+    expect(s.enables).toEqual(["firas.v"]);
+
+    expect((await routerRun("1100", plus(T0, 10))).check).toEqual([]);
+    expect(await su("select count(*)::int n from public.router_accounts")).toEqual([{ n: 0 }]);
+  });
+
+  it("a deferral protects only the deferred month: protected in M, disconnectable in M+1 after its cutoff", async () => {
+    const f = await fixture();
+    await scope(["فديو"], { "فادي": "fadi.v", "فراس": "firas.v" }, f.subs);
+    await one(f.managerId, "select public.defer_invoice($1, $2, $3)", [f.subs["فادي"], M, key()]);
+    await pay(f, f.subs["فراس"]);
+    expect((await routerRun("1100", T0)).would).toEqual([]); // M: deferred → protected
+
+    await one(f.managerId, "select public.open_month($1)", [NEXT]);
+    await pay(f, f.subs["فراس"], NEXT);
+    expect((await routerRun("1100", "2026-12-24T23:00:00+03:00")).would).toEqual([]); // before M+1's cutoff
+    const r = await routerRun("1100", "2026-12-25T00:01:00+03:00");
+    expect(r.would).toEqual([{ u: "fadi.v", action: "disable", reason: "two_bills" }]);
+    expect((await logRows("action = 'would_disable'"))[0].message).toContain("السبب: لم يدفع الفاتورتين (شهر مؤجّل)");
+    expect(await as(f.managerId, "select username, reason_text, due, excluded from public.automation_disconnect_list($1)", [NEXT])).toEqual([
+      { username: "fadi.v", reason_text: "لم يدفع الفاتورتين (شهر مؤجّل)", due: "200000", excluded: false },
+    ]);
+  });
+
+  it("exclusion and pause (audited); un-excluding after the cutoff counts as new; excluding re-enables", async () => {
+    const f = await rulesFixture();
+    const mahmoud = f.subs["محمود خالد"], firas = f.subs["فراس"];
+    await as(f.managerId, "select public.automation_set_exclusion($1, $2, true)", [mahmoud, M]);
+    await as(f.managerId, "select public.automation_set_pause($1, true)", [M]);
+    await expect(as(f.kadar, "select public.automation_set_pause($1, false)", [M])).rejects.toThrow(/للمدير فقط/);
+    await expect(as(f.kadar, "select public.automation_set_exclusion($1, $2, false)", [mahmoud, M])).rejects.toThrow(/للمدير فقط/);
+
+    const p = await routerRun("1100", T0);
+    expect(p).toMatchObject({ gateA: "paused", check: [], would: [] });
+    expect(await logRows("action = 'alert' and reason = 'paused'")).toHaveLength(1);
+    expect(await su("select subscriber_id from public.automation_snapshot where month = $1", [M])).toEqual([{ subscriber_id: firas }]);
+
+    await as(f.managerId, "select public.automation_set_pause($1, false)", [M]);
+    expect((await routerRun("1100", plus(T0, 5))).disables).toEqual(["firas.v"]);
+
+    await as(f.managerId, "select public.automation_set_exclusion($1, $2, false)", [mahmoud, M]);
+    expect((await routerRun("1100", plus(T0, 10))).disables).toEqual(["mahmoud.h"]);
+    const m = await logRows("username = 'mahmoud.h' and action = 'would_disable'");
+    expect(m).toMatchObject([{ new_after_cutoff: true, batch_no: 2 }]);
+    expect(m[0].message).toContain("جديد بعد يوم القطع");
+
+    await as(f.managerId, "select public.automation_set_exclusion($1, $2, true)", [firas, M]);
+    expect((await routerRun("1100", plus(T0, 15))).would).toEqual([{ u: "firas.v", action: "enable", reason: "excluded" }]);
+    expect(await as(f.managerId, "select username, excluded from public.automation_disconnect_list($1) order by username", [M])).toEqual([
+      { username: "firas.v", excluded: true }, { username: "mahmoud.h", excluded: false },
+    ]);
+    expect((await su("select action from public.audit_log where action like 'automation_%' order by id")).map((r) => r.action)).toEqual([
+      "automation_exclude", "automation_pause", "automation_resume", "automation_unexclude", "automation_exclude",
+    ]);
+  });
+
+  it("sanity hold: more than 50% of in-scope → hold + ONE phone alert; «متابعة الفصل» proceeds", async () => {
+    const f = await fixture();
+    await scope(["الهنادي", "فديو"], { "أحمد محمد": "ahmad.h", "محمود خالد": "mahmoud.h", "نقطة خدمة": "spf.h", "فادي": "fadi.v", "فراس": "firas.v" }, f.subs);
+    // in scope 6 (hnadi7, ahmad.h, mahmoud.h, spf.h, fadi.v, firas.v); unpaid 5 (SPF is exempt)
+    const r = await routerRun("1100", T0);
+    expect(r).toMatchObject({ gateA: "held", check: [], would: [] });
+    expect(await su("select hold_reason, snapshot_count, in_scope_count from public.automation_cycles where month = $1", [M]))
+      .toEqual([{ hold_reason: "sanity", snapshot_count: 5, in_scope_count: 6 }]);
+    await routerRun("2116", T0);
+    expect(await su("select body from public.notifications where kind = 'automation_hold'"))
+      .toEqual([{ body: "تم إيقاف الفصل التلقائي — عدد غير طبيعي (5) — وضع تجريبي" }]);
+
+    await expect(as(f.kadar, "select public.automation_continue($1)", [M])).rejects.toThrow(/للمدير فقط/);
+    await as(f.managerId, "select public.automation_continue($1)", [M]);
+    await expect(as(f.managerId, "select public.automation_continue($1)", [M])).rejects.toThrow(/غير موقوف/);
+    expect((await routerRun("1100", plus(T0, 5))).disables.sort()).toEqual(["ahmad.h", "fadi.v", "firas.v", "hnadi7", "mahmoud.h"]);
+  });
+
+  it("sanity hold: more than 2× last month's cutoff count", async () => {
+    const f = await fixture();
+    await scope(["الهنادي", "فديو"], { "أحمد محمد": "ahmad.h", "محمود خالد": "mahmoud.h", "نقطة خدمة": "spf.h", "فادي": "fadi.v", "فراس": "firas.v" }, f.subs);
+    await pay(f, f.subs["علي أحمد عروس"]);
+    await pay(f, f.subs["أحمد محمد"]);
+    await su("insert into public.automation_cycles (month, snapshot_at, snapshot_count) values ('2026-10', now(), 1)");
+    // 3 unpaid of 6 is not over 50%, but 3 > 2 × 1
+    expect((await routerRun("1100", T0)).gateA).toBe("held");
+    expect(await su("select hold_reason, snapshot_count, prev_count from public.automation_cycles where month = $1", [M]))
+      .toEqual([{ hold_reason: "sanity", snapshot_count: 3, prev_count: 1 }]);
+  });
+
+  /** In scope: فديو with u01..u10 only (the fixture's فديو subscribers have no username). u05..u10 paid. */
+  async function batchFixture() {
+    const f = await fixture();
+    await scope(["فديو"], {}, f.subs);
+    const u = await addSubs(f, "فديو", Array.from({ length: 10 }, (_, i) => [`مشترك ${i + 1}`, `u${String(i + 1).padStart(2, "0")}`] as [string, string]));
+    for (const i of [5, 6, 7, 8, 9, 10]) await pay(f, u[`مشترك ${i}`]);
+    return { f, u };
+  }
+
+  it("batches: max per run per router, oldest unpaid first, stable order, batch numbers per router", async () => {
+    await batchFixture();
+    await su("insert into public.billing_months (month) values ('2026-10')");
+    await su("insert into public.invoices (subscriber_id, area_id, month, amount) select id, area_id, '2026-10', 100000 from public.subscribers where username = 'u04'");
+    await su("update public.settings set value = '2' where key = 'max_disconnects_per_run'");
+    expect(await routerRun("1100", T0)).toMatchObject({ disables: ["u04", "u01"], batch: 1 });
+    expect(await routerRun("1100", plus(T0, 5))).toMatchObject({ disables: ["u02", "u03"], batch: 2 });
+    expect(await routerRun("1100", plus(T0, 10))).toMatchObject({ disables: [], batch: null });
+    expect((await logRows("router_id = '1100' and action = 'would_disable'")).map((r) => [r.username, r.batch_no]))
+      .toEqual([["u04", 1], ["u01", 1], ["u02", 2], ["u03", 2]]);
+    expect(await routerRun("2116", T0)).toMatchObject({ disables: ["u04", "u01"], batch: 1 });
+  });
+
+  it("mid-month guard: more than daily_new_disconnect_limit NEW ones in a day → hold + alert; «متابعة» proceeds", async () => {
+    const { f, u } = await batchFixture();
+    await su("update public.settings set value = '2' where key = 'daily_new_disconnect_limit'");
+    expect((await routerRun("1100", T0)).disables).toEqual(["u01", "u02", "u03", "u04"]); // the cutoff list is not "new"
+    for (const i of [5, 6, 7]) {
+      const pid = (await su("select id from public.payments where subscriber_id = $1", [u[`مشترك ${i}`]]))[0].id;
+      await as(f.managerId, "select public.manager_reverse('payment', $1, 'خطأ', $2)", [pid, key()]);
+    }
+    const DAY2 = "2026-11-26T10:00:00+03:00";
+    expect(await routerRun("1100", DAY2)).toMatchObject({ disables: ["u05", "u06"], gate: "held" });
+    expect(await su("select hold_reason from public.automation_cycles where month = $1", [M])).toEqual([{ hold_reason: "daily_limit" }]);
+    expect(await su("select count(*)::int n from public.notifications where kind = 'automation_hold'")).toEqual([{ n: 1 }]);
+    expect(await routerRun("1100", plus(DAY2, 5))).toMatchObject({ gateA: "held", check: [], would: [] });
+
+    await as(f.managerId, "select public.automation_continue($1)", [M]);
+    expect((await routerRun("1100", plus(DAY2, 10))).disables).toEqual(["u07"]);
+  });
+
+  it("a payment between the 20:00 warning and 00:00 is not disconnected", async () => {
+    const f = await rulesFixture();
+    expect((await one<{ r: { count_now: number } }>(f.managerId, "select public.automation_cycle_info($1) r", [M])).r.count_now).toBe(2);
+    expect((await routerRun("1100", EVE)).check).toEqual([]);
+    await pay(f, f.subs["محمود خالد"]); // 22:00
+    expect((await routerRun("1100", T0)).disables).toEqual(["firas.v"]);
+    expect(await su("select snapshot_count from public.automation_cycles where month = $1", [M])).toEqual([{ snapshot_count: 1 }]);
+  });
+
+  it("token check: hash only, per router, re-issue invalidates; who may call what; log is manager-only", async () => {
+    const f = await fixture();
+    const call = (router: string, token: string) =>
+      one<{ r: SyncOut }>(null, "select public.router_sync($1, $2, $3::jsonb) r", [router, token, JSON.stringify({ phase: "candidates" })]);
+    await expect(call("1100", "anything")).rejects.toThrow(/unauthorized/); // no token issued yet
+
+    const tok = (await su("select public.router_issue_token('1100') t"))[0].t as string;
+    expect(tok).toMatch(/^tsk_[0-9a-f]{64}$/);
+    expect((await su("select token_hash from public.routers where id = '1100'"))[0].token_hash).not.toContain(tok.slice(4, 20));
+    await expect(call("1100", tok + "x")).rejects.toThrow(/unauthorized/);
+    await expect(call("2116", tok)).rejects.toThrow(/unauthorized/);
+    expect(await su("select last_seen_at from public.routers where id = '2116'")).toEqual([{ last_seen_at: null }]);
+    expect((await call("1100", tok)).r).toMatchObject({ ok: true, mode: "dry_run", dry: true });
+
+    await su("select public.router_issue_token('1100')");
+    await expect(call("1100", tok)).rejects.toThrow(/unauthorized/);
+
+    await expect(as(f.managerId, "select public.router_issue_token('1100')")).rejects.toThrow(/permission denied/);
+    await expect(as(null, "select public.router_issue_token('1100')")).rejects.toThrow(/permission denied/);
+    await expect(asService("select public.router_issue_token('1100')")).rejects.toThrow(/permission denied/);
+    await expect(as(f.managerId, "select public.router_sync('1100', 'x', '{}'::jsonb)")).rejects.toThrow(/permission denied/);
+    await expect(as(null, "select public._router_sync('1100', '{}'::jsonb, now())")).rejects.toThrow(/permission denied/);
+    await expect(as(f.managerId, "select * from public.routers")).rejects.toThrow(/permission denied/);
+
+    await su("select public._alog(now(), '-', '', null, $1, 'alert', 'x', 'x', null, null, null, false, true)", [M]);
+    expect(await as(f.managerId, "select * from public.automation_log")).toHaveLength(1);
+    expect(await as(f.kadar, "select * from public.automation_log")).toHaveLength(0);
+    await expect(as(null, "select * from public.automation_log")).rejects.toThrow(/permission denied/);
+    await expect(as(f.kadar, "select * from public.automation_log_list(current_date)")).rejects.toThrow(/للمدير فقط/);
+  });
+
+  it("settings: cutoff_day editable only in dry_run (1–28, audited); a dry script in live mode acts on nothing", async () => {
+    const f = await rulesFixture();
+    await expect(as(f.kadar, "select public.set_cutoff_day(5)")).rejects.toThrow(/للمدير فقط/);
+    await expect(as(f.managerId, "select public.set_cutoff_day(29)")).rejects.toThrow(/1 إلى 28/);
+    await as(f.managerId, "select public.set_cutoff_day(5)");
+    expect(await su("select value from public.settings where key = 'cutoff_day'")).toEqual([{ value: "5" }]);
+    expect(await su("select summary from public.audit_log where action = 'set_cutoff_day'")).toEqual([{ summary: "يوم القطع: 25 ← 5" }]);
+
+    await su("update public.settings set value = 'live' where key = 'automation_mode'");
+    await expect(as(f.managerId, "select public.set_cutoff_day(6)")).rejects.toThrow(/التجريبي فقط/);
+    const st = await one<{ r: { mode: string; cutoff_day: number; routers: unknown[] } }>(f.managerId, "select public.automation_status() r");
+    expect(st.r).toMatchObject({ mode: "live", cutoff_day: 5 });
+    expect(st.r.routers).toHaveLength(2);
+
+    await su("update public.settings set value = '25' where key = 'cutoff_day'");
+    const r = await routerRun("1100", T0); // the read-only script sends dry=true
+    expect(r).toMatchObject({ mode: "live", dry: true, actions: [] });
+    expect(r.disables).toEqual(["mahmoud.h", "firas.v"]);
+    expect(await su("select distinct state from public.router_accounts")).toEqual([{ state: "simulated" }]);
+    expect(await logRows("reason = 'dry_script_in_live'")).toHaveLength(1);
+  });
+
+  it("RouterOS JSON quirks: a lone obs object counts as a one-item list; a missing 'dry' means dry", async () => {
+    await rulesFixture();
+    const a = await sync("1100", { phase: "candidates" }, T0);
+    expect(a).toMatchObject({ dry: true, check: ["mahmoud.h", "firas.v"] });
+    const b = await sync("1100", { phase: "report", obs: { u: "mahmoud.h", e: true, d: false } }, T0);
+    expect(b).toMatchObject({ dry: true, actions: [], would: [{ u: "mahmoud.h", action: "disable", reason: "unpaid" }] });
+    await expect(sync("1100", { phase: "report", obs: "x" }, T0)).rejects.toThrow(/bad obs/);
+  });
+});

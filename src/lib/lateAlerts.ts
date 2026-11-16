@@ -1,23 +1,25 @@
 /**
- * Late-payment alerts for the manager: each 'late_payment' notification row (inserted by the
- * database trigger) becomes ONE phone notification with sound. Checked live (Realtime while the
+ * Manager alerts: each 'late_payment' row (database trigger) and each 'automation_hold' row
+ * (automatic disconnect held: abnormal count / daily limit) becomes ONE phone notification with sound. Checked live (Realtime while the
  * app is open), at start / foreground, and from the background task. The last handled id is kept
  * on the phone, so a row is never shown twice — and the first run does not replay old rows.
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { Platform } from "react-native";
+import { CUTOFF_ROUTE, URGENT_COLOR } from "./automation";
 import { planLateAlerts, type LateRow } from "./lateAlertPlan";
 import { ALERT_CHANNEL, ensureAlertChannel, storedReminderRole } from "./reminders";
 import { supabase } from "./supabase";
 
 const LAST_KEY = "tahseel.lateAlerts.lastId:"; // + user id: another manager on this phone starts fresh
 const ROUTE = "/manager/notifications";
+const KINDS = ["late_payment", "automation_hold"];
 
 let chain: Promise<unknown> = Promise.resolve();
 
 async function fetchNewest(): Promise<number | null> {
-  const { data, error } = await supabase.from("notifications").select("id").eq("kind", "late_payment").order("id", { ascending: false }).limit(1);
+  const { data, error } = await supabase.from("notifications").select("id").in("kind", KINDS).order("id", { ascending: false }).limit(1);
   if (error) throw error;
   return data?.[0]?.id ?? null;
 }
@@ -25,8 +27,8 @@ async function fetchNewest(): Promise<number | null> {
 async function fetchAfter(lastId: number): Promise<LateRow[]> {
   const { data, error } = await supabase
     .from("notifications")
-    .select("id, title, body")
-    .eq("kind", "late_payment")
+    .select("id, kind, title, body")
+    .in("kind", KINDS)
     .gt("id", lastId)
     .order("id", { ascending: true })
     .limit(30);
@@ -48,9 +50,12 @@ export function checkLateAlerts(): Promise<void> {
       const plan = planLateAlerts(lastId, lastId === null ? await fetchNewest() : null, lastId === null ? [] : await fetchAfter(lastId));
       if (plan.show.length) await ensureAlertChannel();
       for (const r of plan.show) {
+        const hold = r.kind === "automation_hold";
         await Notifications.scheduleNotificationAsync({
-          identifier: `late-${r.id}`,
-          content: { title: r.title, body: r.body, sound: "default", data: { route: ROUTE } },
+          identifier: `${hold ? "hold" : "late"}-${r.id}`,
+          content: hold
+            ? { title: r.title, body: r.body, sound: "default", color: URGENT_COLOR, priority: Notifications.AndroidNotificationPriority.MAX, data: { route: CUTOFF_ROUTE } }
+            : { title: r.title, body: r.body, sound: "default", data: { route: ROUTE } },
           trigger: { channelId: ALERT_CHANNEL }, // now
         });
         await AsyncStorage.setItem(key, String(r.id)); // after each one: a crash never repeats a shown alert

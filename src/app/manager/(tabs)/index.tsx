@@ -11,6 +11,7 @@ import { currentMonth, monthLabel } from "../../../lib/months";
 import { loadOverview } from "../../../lib/managerData";
 import { rpc } from "../../../lib/rpc";
 import { useLoad } from "../../../lib/useLoad";
+import { IconBtn } from "../../../ui/automationParts";
 import { Banner, Button, Card, Num, Sheet, T } from "../../../ui/kit";
 import { Empty, MonthBar, Progress, Stat } from "../../../ui/parts";
 import { colors, space } from "../../../ui/theme";
@@ -54,6 +55,8 @@ export default function Overview() {
           <T w="bold" size={22}>أهلاً {profile?.full_name}</T>
           <T color={colors.muted}>كل المناطق</T>
         </View>
+        {/* last child of an RTL row → top left */}
+        <IconBtn name="receipt-outline" label="السجل" onPress={() => router.push("/manager/automation/log")} />
       </View>
 
       {m.currentMonthMissing && (data?.length ?? 0) > 0 && (

@@ -53,6 +53,14 @@ export default function More() {
           <Button title="استيراد من Excel" variant="secondary" onPress={() => router.push("/manager/import")} />
         </Card>
 
+        <Card style={{ gap: space(3) }}>
+          <T w="bold" size={17}>الفصل التلقائي</T>
+          <T color={colors.muted}>من سيُفصل يوم القطع، الاستثناءات، السجل اليومي لكل سيرفر، والإعدادات.</T>
+          <Button title="قائمة الفصل" variant="secondary" onPress={() => router.push("/manager/automation/cutoff")} />
+          <Button title="السجل" variant="secondary" onPress={() => router.push("/manager/automation/log")} />
+          <Button title="الإعدادات" variant="ghost" onPress={() => router.push("/manager/automation/settings")} />
+        </Card>
+
         <GuestCodeCard />
 
         <Card style={{ gap: space(2) }}>

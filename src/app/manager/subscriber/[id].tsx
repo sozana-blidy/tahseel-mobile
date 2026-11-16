@@ -2,6 +2,8 @@ import { useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
 import { Alert, RefreshControl, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { loadSubscriberAutomation, setNoAutoDisconnect } from "../../../lib/automationData";
+import { serverLabel } from "../../../lib/automation";
 import { emitDataChanged } from "../../../lib/bus";
 import type { AppError } from "../../../lib/errors";
 import { useManager } from "../../../lib/managerContext";
@@ -114,6 +116,8 @@ export default function SubscriberScreen() {
           {history.data?.map((h) => <HistoryRow key={h.month} h={h} />)}
         </Card>
 
+        <AutomationCard subscriberId={sub.id} hasUsername={!!sub.username} />
+
         <Card style={{ gap: space(1) }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: space(1) }}>
             <T w="bold">بيانات المشترك</T>
@@ -190,6 +194,58 @@ export default function SubscriberScreen() {
         />
       )}
     </SafeAreaView>
+  );
+}
+
+const ACCOUNT_STATE: Record<string, string> = {
+  simulated: "كان سيُفصل (تجريبي)",
+  disabled: "مفصول من تحصيل",
+  overridden: "أعيد تفعيله يدوياً — لن يُفصل هذا الشهر",
+};
+
+/** «الفصل التلقائي»: the «لا يُفصل» switch, this month's exclusion and what Tahseel did on each server. */
+function AutomationCard({ subscriberId, hasUsername }: { subscriberId: string; hasUsername: boolean }) {
+  const a = useLoad(() => loadSubscriberAutomation(subscriberId), [subscriberId]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function toggle(v: boolean) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await setNoAutoDisconnect(subscriberId, v);
+      emitDataChanged();
+    } catch (e) {
+      setErr((e as AppError).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card style={{ gap: space(2) }}>
+      <T w="bold">الفصل التلقائي</T>
+      {a.error ? <T color={colors.danger}>{a.error}</T> : null}
+      {!a.data && !a.error ? <T color={colors.muted}>جارٍ التحميل…</T> : null}
+      {a.data ? (
+        <>
+          <ToggleRow
+            label="لا يُفصل"
+            hint="لا يفصله تحصيل تلقائياً أبداً، حتى لو لم يدفع."
+            value={a.data.no_auto_disconnect}
+            onChange={(v) => (busy ? undefined : void toggle(v))}
+          />
+          {!hasUsername ? <T size={13} color={colors.muted}>لا يوجد اسم مستخدم — لا يشمله الفصل التلقائي.</T> : null}
+          {a.data.excluded ? <T size={13} color={colors.open}>مستثنى من الفصل لشهر {monthLabel(a.data.month)}.</T> : null}
+          {a.data.accounts.map((x) => (
+            <T key={x.router_id} size={13} color={colors.muted}>
+              {serverLabel(x.router_id)}: {ACCOUNT_STATE[x.state] ?? x.state} · {localTime(x.since)}
+            </T>
+          ))}
+          {err ? <T color={colors.danger}>{err}</T> : null}
+        </>
+      ) : null}
+    </Card>
   );
 }
 

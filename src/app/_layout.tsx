@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { I18nManager, Platform, View } from "react-native";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { isConfigured } from "../lib/env";
+import { refreshEveWarning } from "../lib/eveWarning";
 import { routeOf, setupReminders, useLastReminderTap } from "../lib/reminders";
 import { Card, T } from "../ui/kit";
 import { colors, space } from "../ui/theme";
@@ -39,7 +40,8 @@ function Gate({ fontsReady }: { fontsReady: boolean }) {
   // Daily (manager) / monthly (agent) reminders follow whoever is signed in on this phone.
   const role = session && profile?.active ? profile.role : null;
   useEffect(() => {
-    if (ready) setupReminders(role);
+    // setupReminders clears every scheduled notification first, so the eve warning comes after it
+    if (ready) void setupReminders(role).then(() => (role === "manager" ? refreshEveWarning() : undefined));
   }, [ready, role]);
 
   // Tapping a reminder opens its screen (once per notification).
