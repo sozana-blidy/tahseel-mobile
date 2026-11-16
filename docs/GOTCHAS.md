@@ -61,3 +61,4 @@
 - 2026-11-16: RouterOS `/export` wraps long lines with a trailing `\` + newline + indent — join them before parsing `name=` / `disabled=yes`.
 - 2026-11-16: Local DB tests on Windows: `pg_ctl start | Out-Null` in PowerShell hangs forever (postgres inherits the pipe). Start pg_ctl without piping; stopping the shell task also kills the server.
 - 2026-11-16: Git Bash heredocs can mangle backslashes in Python regexes — write helper scripts with the editor, not `cat <<EOF`.
+- 2026-11-16: Claude's shell sets `NoDefaultCurrentDirectoryInExePath=1`, so `cmd /c gradlew.bat assembleRelease` fails with "not recognized" even inside `android\` — call it by full path (`d:\dev\tahseel-mobile\android\gradlew.bat assembleRelease`). Your own Command Prompt is unaffected.
