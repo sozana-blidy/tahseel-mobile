@@ -40,7 +40,17 @@ export interface SubscriberRow {
   last_paid_at: string | null;
   /** Comma-separated live payment methods, e.g. "agent_cash" or "agent_cash,manager_cash". */
   paid_via: string | null;
+  /** An older invoice deferred INTO this month and still unpaid («فاتورتين»): its month and amount. */
+  carried_month: string | null;
+  carried_amount: number;
+  /** This month's invoice is deferred (still unpaid) to that month. */
+  deferred_to: string | null;
+  /** Active unpaid deferral — the router must never disconnect this subscriber. */
+  never_disconnect: boolean;
 }
+
+/** What one payment action collects: this month's remaining + a carried (deferred) invoice. */
+export const amountDue = (r: Pick<SubscriberRow, "remaining" | "carried_amount">) => r.remaining + r.carried_amount;
 
 export const toNum = (v: unknown): number => (v === null || v === undefined || v === "" ? 0 : Number(v));
 
@@ -50,6 +60,10 @@ export function normalizeRow(r: Record<string, unknown>): SubscriberRow {
     ...row,
     display_name: displayName(String(r.full_name ?? ""), (r.father_name as string | null) ?? null),
     paid_via: (r.paid_via as string | null) ?? null,
+    carried_month: (r.carried_month as string | null) ?? null,
+    carried_amount: toNum(r.carried_amount),
+    deferred_to: (r.deferred_to as string | null) ?? null,
+    never_disconnect: r.never_disconnect === true,
     monthly_amount: r.monthly_amount === null ? null : toNum(r.monthly_amount),
     amount: r.amount === null ? null : toNum(r.amount),
     paid: toNum(r.paid),

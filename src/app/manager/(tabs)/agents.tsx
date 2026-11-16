@@ -36,6 +36,7 @@ export default function Agents() {
           <T w="bold" size={22} style={{ flex: 1 }}>المعتمدون</T>
           <Button title="+ دعوة معتمد" variant="secondary" onPress={() => router.push("/manager/invite")} style={{ minHeight: 40 }} />
         </View>
+        <Button title="إنشاء حسابات (اسم دخول + كلمة مرور)" onPress={() => router.push("/manager/accounts")} />
         <MonthBar months={m.months} month={m.month} onPick={m.setMonth} />
         {error && <Banner tone="error" text={error} />}
 

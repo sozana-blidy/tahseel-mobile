@@ -7,6 +7,7 @@
  * Env: TAHSEEL_PG (default postgres://postgres@/postgres?host=/tmp/pgsock&port=54329)
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { NAME_CASES } from "../../src/lib/nameCases";
 import path from "node:path";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -85,7 +86,7 @@ const key = () => `k-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 
 /* ---------------- fixture ---------------- */
 
-async function newUser(email: string): Promise<string> {
+async function newUser(email: string | null): Promise<string> {
   return (await su("insert into auth.users (email) values ($1) returning id", [email]))[0].id;
 }
 
@@ -120,6 +121,50 @@ async function fixture() {
 
 const status = async (uid: string, sub: string, month = M) =>
   (await one<{ status: string; remaining: string; paid: string }>(uid, "select status, remaining, paid from public.area_subscribers($1) where id = $2", [month, sub]));
+
+/** Run SQL as the Edge Function does (service_role). */
+async function asService<T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> {
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    await c.query("set local role service_role");
+    await c.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ role: "service_role" })]);
+    const r = await c.query(sql, params);
+    await c.query("commit");
+    return r.rows as T[];
+  } catch (e) {
+    await c.query("rollback");
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+/** Run SQL as a Supabase anonymous (guest) user. */
+async function asGuest<T = Record<string, unknown>>(uid: string, sql: string, params: unknown[] = []): Promise<T[]> {
+  const c = await pool.connect();
+  try {
+    await c.query("begin");
+    await c.query("set local role authenticated");
+    await c.query("select set_config('request.jwt.claims', $1, true)", [JSON.stringify({ sub: uid, role: "authenticated", is_anonymous: true })]);
+    const r = await c.query(sql, params);
+    await c.query("commit");
+    return r.rows as T[];
+  } catch (e) {
+    await c.query("rollback");
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+/** YYYY-MM shifted by n months. */
+const shiftM = (m: string, n: number) => {
+  const [y, mo] = m.split("-").map(Number);
+  return new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7);
+};
+const subRow = async (uid: string, sub: string, month = M) =>
+  one<Record<string, unknown>>(uid, "select * from public.area_subscribers($1) where id = $2", [month, sub]);
 
 /** A part payment made before 0006 (the API no longer accepts one) — inserted directly as legacy data. */
 const legacyPart = (sub: string, amount: number, method: string, recordedBy: string, agentId: string | null = null) =>
@@ -340,6 +385,195 @@ describe("daily summary (replaces per-payment notifications)", () => {
     await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["محمود خالد"], M, key()]);
     const via = Object.fromEntries((await as<{ full_name: string; paid_via: string | null }>(f.managerId, "select full_name, paid_via from public.area_subscribers($1)", [M])).map((r) => [r.full_name, r.paid_via]));
     expect(via).toMatchObject({ "أحمد محمد": "agent_cash", "فراس": "shamcash", "محمود خالد": "agent_cash,manager_cash", "فادي": null });
+  });
+});
+
+describe("agent accounts (Edge Function helpers, service_role only)", () => {
+  it("validates like invites, registers profile + areas, refuses apps and non-managers", async () => {
+    const f = await fixture();
+    const reg = (actor: string, user: string | null, username: string, areas: string[], dry: boolean) =>
+      asService<{ r: Record<string, unknown> }>(
+        "select public.admin_register_agent($1, $2, $3, $4, $5::uuid[], null, 'none', 0, $6) r", [actor, user, "سامر", username, areas, dry]);
+    // apps can never call them
+    await expect(as(f.managerId, "select public.admin_register_agent($1, null, 'x', 'samer', $2::uuid[], null, 'none', 0, true)", [f.managerId, [f.areas["الخرنوبة"]]])).rejects.toThrow(/permission denied/);
+    await expect(as(f.managerId, "select public.admin_is_manager($1)", [f.managerId])).rejects.toThrow(/permission denied/);
+    expect((await asService<{ m: boolean }>("select public.admin_is_manager($1) m", [f.managerId]))[0].m).toBe(true);
+    expect((await asService<{ m: boolean }>("select public.admin_is_manager($1) m", [f.kadar]))[0].m).toBe(false);
+
+    await expect(reg(f.kadar, null, "samer", [f.areas["الخرنوبة"]], true)).rejects.toThrow(/للمدير فقط/);
+    await expect(reg(f.managerId, null, "ali.kadar", [f.areas["الخرنوبة"]], true)).rejects.toThrow(/مستخدم مسبقاً/);
+    await expect(reg(f.managerId, null, "samer", [f.areas["الهنادي"]], true)).rejects.toThrow(/مرتبطة بمعتمد آخر/);
+    await expect(reg(f.managerId, null, "Sa mer", [f.areas["الخرنوبة"]], true)).rejects.toThrow(/اسم الدخول/);
+    expect((await reg(f.managerId, null, "Samer", [f.areas["الخرنوبة"]], true))[0].r).toMatchObject({ ok: true, username: "samer" });
+
+    const uid = (await su("insert into auth.users (email) values ('samer@agents.tahseel.app') returning id"))[0].id;
+    expect((await reg(f.managerId, uid, "samer", [f.areas["الخرنوبة"]], false))[0].r).toMatchObject({ ok: true, username: "samer", areas: "الخرنوبة" });
+    expect((await su("select role, username from public.profiles where id = $1", [uid]))[0]).toEqual({ role: "agent", username: "samer" });
+    expect(await as(uid, "select name from public.areas")).toEqual([{ name: "الخرنوبة" }]);
+
+    const reset = await asService<{ r: Record<string, unknown> }>("select public.admin_agent_for_reset($1, $2) r", [f.managerId, uid]);
+    expect(reset[0].r).toMatchObject({ username: "samer", areas: "الخرنوبة" });
+    await expect(asService("select public.admin_agent_for_reset($1, $2)", [f.managerId, f.managerId])).rejects.toThrow(/غير موجود/);
+  });
+});
+
+describe("guest mode (anonymous, read-only, guest code)", () => {
+  it("three-part names match src/lib/names.ts", async () => {
+    await fixture();
+    for (const [full, father, out] of NAME_CASES) {
+      expect((await su("select public._display_name($1, $2) n", [full, father]))[0].n).toBe(out);
+    }
+  });
+
+  it("a guest gets nothing from tables or manager/agent functions", async () => {
+    const f = await fixture();
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["أحمد محمد"], M, key()]);
+    const g = await newUser(null);
+    for (const t of ["settings", "profiles", "areas", "agent_areas", "agent_invites", "subscribers", "billing_months", "invoices",
+      "payments", "exemptions", "agent_transactions", "notifications", "audit_log"]) {
+      expect(await asGuest(g, `select * from public.${t}`), t).toHaveLength(0);
+    }
+    for (const t of ["guest_config", "guest_sessions", "guest_attempts"]) {
+      await expect(asGuest(g, `select * from public.${t}`), t).rejects.toThrow(/permission denied/);
+    }
+    for (const sql of [
+      "select * from public.area_subscribers($1)", "select * from public.area_overview($1)", "select * from public.agent_cash($1)",
+    ]) await expect(asGuest(g, sql, [M]), sql).rejects.toThrow(/غير مصرح|للمدير فقط/);
+    await expect(asGuest(g, "select * from public.daily_collections(7)")).rejects.toThrow(/للمدير فقط/);
+    await expect(asGuest(g, "select * from public.subscriber_history($1)", [f.subs["أحمد محمد"]])).rejects.toThrow(/للمدير فقط/);
+    await expect(asGuest(g, "select public.set_guest_code('123456')")).rejects.toThrow(/للمدير فقط/);
+    await expect(asGuest(g, "select public._display_name('a', 'b')")).rejects.toThrow(/permission denied/);
+  });
+
+  it("guest code: hash only, rate limit, read-only fields, code change ends sessions", async () => {
+    const f = await fixture();
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["علي أحمد عروس"], M, key()]);
+    const g = await newUser(null);
+    await expect(asGuest(g, "select * from public.guest_overview(null)")).rejects.toThrow(/رمز الضيف/);
+    expect((await asGuest<{ r: { ok: boolean; error: string } }>(g, "select public.guest_unlock('123456') r"))[0].r).toMatchObject({ ok: false, error: "دخول الضيوف غير مفعّل" });
+
+    await expect(as(f.managerId, "select public.set_guest_code('12345')")).rejects.toThrow(/6 أحرف/);
+    await one(f.managerId, "select public.set_guest_code(' Zaytoon26 ')");
+    const cfg = (await su("select code_hash, code_salt from public.guest_config"))[0];
+    expect(cfg.code_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(cfg)).not.toContain("zaytoon26");
+    expect((await one<{ e: boolean }>(f.managerId, "select public.guest_code_enabled() e")).e).toBe(true);
+
+    // 5 wrong codes → locked for 15 minutes, even with the right code
+    for (let i = 0; i < 5; i++) {
+      expect((await asGuest<{ r: { ok: boolean } }>(g, "select public.guest_unlock('wrong-code') r"))[0].r.ok).toBe(false);
+    }
+    expect((await asGuest<{ r: { error: string } }>(g, "select public.guest_unlock('zaytoon26') r"))[0].r.error).toMatch(/محاولات كثيرة/);
+
+    const g2 = await newUser(null);
+    expect((await asGuest<{ r: { ok: boolean } }>(g2, "select public.guest_unlock('ZAYTOON26') r"))[0].r.ok).toBe(true);
+    const areas = await asGuest<Record<string, unknown>>(g2, "select * from public.guest_overview(null)");
+    const hnadi = areas.find((a) => a.area_name === "الهنادي")!;
+    expect(Object.keys(hnadi).sort()).toEqual(["area_id", "area_name", "month", "paid_count", "unpaid_count"]);
+    expect(hnadi).toMatchObject({ month: M, paid_count: "1" });
+    const list = await asGuest<Record<string, unknown>>(g2, "select * from public.guest_area_list(null, $1)", [f.areas["الهنادي"]]);
+    expect(Object.keys(list[0]).sort()).toEqual(["area_name", "display_name", "status"]);
+    expect(list.find((r) => r.display_name === "علي أحمد عروس")?.status).toBe("paid");
+    expect(list.map((r) => r.status).every((x) => ["paid", "unpaid", "exempt"].includes(String(x)))).toBe(true);
+    // signed-in staff are not guests
+    await expect(as(f.managerId, "select * from public.guest_overview(null)")).rejects.toThrow(/رمز الضيف/);
+    await expect(as(f.kadar, "select public.guest_unlock('zaytoon26')")).rejects.toThrow(/للضيوف فقط/);
+
+    // a new code signs every guest out
+    await one(f.managerId, "select public.set_guest_code('newcode99')");
+    await expect(asGuest(g2, "select * from public.guest_overview(null)")).rejects.toThrow(/رمز الضيف/);
+    expect((await asGuest<{ r: { unlocked: boolean } }>(g2, "select public.guest_status() r"))[0].r.unlocked).toBe(false);
+  });
+});
+
+describe("deferral («تأجيل»)", () => {
+  it("defer → cancel → defer, one month max, agent pays both in one idempotent tap", async () => {
+    const f = await fixture();
+    const N = shiftM(M, 1);
+    const ahmad = f.subs["أحمد محمد"]; // 100,000 a month
+    const defer = (k = key()) => one<{ r: { deferred_to: string; repeated: boolean } }>(f.managerId, "select public.defer_invoice($1, $2, $3) r", [ahmad, M, k]);
+    await expect(as(f.kadar, "select public.defer_invoice($1, $2, $3)", [ahmad, M, key()])).rejects.toThrow(/غير مفعّل|للمدير فقط/);
+    const k1 = key();
+    expect((await defer(k1)).r).toMatchObject({ deferred_to: N, repeated: false });
+    expect((await defer(k1)).r.repeated).toBe(true);
+    await expect(defer()).rejects.toThrow(/مؤجلة مسبقاً/);
+    expect(await subRow(f.managerId, ahmad)).toMatchObject({ status: "unpaid", deferred_to: N, never_disconnect: true, carried_amount: "0" });
+    expect((await asService<{ n: boolean }>("select public.never_disconnect($1) n", [ahmad]))[0].n).toBe(true);
+    await expect(as(f.managerId, "select public.never_disconnect($1)", [ahmad])).rejects.toThrow(/permission denied/);
+
+    await as(f.managerId, "select public.cancel_deferral($1, $2)", [ahmad, M]);
+    expect(await subRow(f.managerId, ahmad)).toMatchObject({ deferred_to: null, never_disconnect: false });
+    expect((await defer()).r.repeated).toBe(false); // allowed again after a cancel
+
+    await one(f.managerId, "select public.open_month($1)", [N]);
+    expect(await subRow(f.managerId, ahmad, N)).toMatchObject({ carried_month: M, carried_amount: "100000", remaining: "100000", never_disconnect: true });
+    // never two months
+    await expect(one(f.managerId, "select public.defer_invoice($1, $2, $3)", [ahmad, N, key()])).rejects.toThrow(/شهر واحد/);
+    // the agent sees it too (through his area) and pays both at once
+    expect(await subRow(f.kadar, ahmad, N)).toMatchObject({ carried_month: M, carried_amount: "100000" });
+    const k = key();
+    const p1 = await one<{ r: Record<string, unknown> }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [ahmad, N, k]);
+    expect(p1.r).toMatchObject({ amount: 200000, carried_month: M, carried_amount: 100000, repeated: false });
+    const p2 = await one<{ r: Record<string, unknown> }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [ahmad, N, k]);
+    expect(p2.r).toMatchObject({ amount: 200000, repeated: true });
+    expect(await su("select month, amount::int from public.payments where subscriber_id = $1 order by month", [ahmad])).toEqual([
+      { month: M, amount: 100000 }, { month: N, amount: 100000 },
+    ]);
+    expect((await status(f.managerId, ahmad, M)).status).toBe("paid");
+    expect(await subRow(f.managerId, ahmad, N)).toMatchObject({ status: "paid", carried_amount: "0", never_disconnect: false });
+    await expect(as(f.managerId, "select public.cancel_deferral($1, $2)", [ahmad, M])).rejects.toThrow(/دُفعت/);
+  });
+
+  it("manager pays both: only the total is accepted; Sham Cash number on the current row", async () => {
+    const f = await fixture();
+    const N = shiftM(M, 1);
+    const mahmoud = f.subs["محمود خالد"]; // 150,000 a month
+    await one(f.managerId, "select public.defer_invoice($1, $2, $3)", [mahmoud, M, key()]);
+    await one(f.managerId, "select public.open_month($1)", [N]);
+    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, 150000, 'manager_cash', $3)", [mahmoud, N, key()])).rejects.toThrow(/كاملة فقط: 300,000/);
+    const r = await one<{ r: Record<string, unknown> }>(f.managerId, "select public.manager_record_payment($1, $2, 300000, 'shamcash', $3, 'SC-7') r", [mahmoud, N, key()]);
+    expect(r.r).toMatchObject({ amount: 300000, carried_month: M });
+    expect(await su("select month, amount::int, reference, notes from public.payments where subscriber_id = $1 order by month", [mahmoud])).toEqual([
+      { month: M, amount: 150000, reference: null, notes: "نفس عملية SC-7" },
+      { month: N, amount: 150000, reference: "SC-7", notes: null },
+    ]);
+  });
+});
+
+describe("late-payment notifications", () => {
+  it("late = on/after the cutoff of its own month; a carried (deferred) invoice never; one row per late payment", async () => {
+    const f = await fixture();
+    // months relative to "now" (payments are stamped with now())
+    const CUR = (await su("select to_char(now() at time zone 'Asia/Damascus', 'YYYY-MM') m"))[0].m as string;
+    const PREV = shiftM(CUR, -1);
+    const NEXT = shiftM(CUR, 1);
+    for (const m of [PREV, CUR, NEXT]) await one(f.managerId, "select public.open_month($1)", [m]);
+    expect((await su("select value from public.settings where key = 'cutoff_day'"))[0].value).toBe("25");
+    const late = () => su("select n.body, p.month from public.notifications n join public.payments p on p.id = n.payment_id where n.kind = 'late_payment' order by n.id");
+    const ali = f.subs["علي أحمد عروس"]; // 200,000
+    const ahmad = f.subs["أحمد محمد"]; // 100,000
+
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [ali, PREV, key()]); // last month's own invoice → late
+    expect(await late()).toEqual([{ body: "علي أحمد عروس — الهنادي: كان متأخراً ودفع 200,000 ل.س", month: PREV }]);
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [ali, NEXT, key()]); // before its cutoff → not late
+    expect(await late()).toHaveLength(1);
+
+    // last month deferred into this month; with cutoff day 1 this month's own invoice is surely late
+    await one(f.managerId, "select public.defer_invoice($1, $2, $3)", [ahmad, PREV, key()]);
+    await su("update public.settings set value = '1' where key = 'cutoff_day'");
+    const both = await one<{ r: { amount: number; carried_month: string } }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [ahmad, CUR, key()]);
+    expect(both.r).toMatchObject({ amount: 200000, carried_month: PREV });
+    const rows = await late();
+    expect(rows).toHaveLength(2); // ONE alert: the current month's own invoice — the carried one never
+    expect(rows[1]).toEqual({ body: "أحمد محمد — الهنادي: كان متأخراً ودفع 100,000 ل.س", month: CUR });
+
+    // a correction (reversal row) never alerts
+    const pid = (await su("select id from public.payments where subscriber_id = $1 and month = $2", [ali, PREV]))[0].id;
+    await as(f.managerId, "select public.manager_reverse('payment', $1, 'خطأ', $2)", [pid, key()]);
+    expect(await late()).toHaveLength(2);
+    // the manager reads them; agents and guests do not
+    expect(await as(f.managerId, "select id from public.notifications where kind = 'late_payment'")).toHaveLength(2);
+    expect(await as(f.kadar, "select id from public.notifications")).toHaveLength(0);
   });
 });
 

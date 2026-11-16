@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { AppState } from "react-native";
 import { emitDataChanged, onDataChanged } from "./bus";
 import { currentMonth } from "./months";
+import { checkLateAlerts } from "./lateAlerts";
 import { refreshTonight } from "./reminders";
 import { q } from "./rpc";
 import { supabase } from "./supabase";
@@ -47,6 +48,8 @@ export function ManagerProvider({ children }: { children: ReactNode }) {
         clearTimeout(timer);
         timer = setTimeout(emitDataChanged, 1500);
       })
+      // late payer → a phone notification right away (each row once; see lateAlerts.ts)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications" }, () => void checkLateAlerts())
       .subscribe();
     return () => {
       clearTimeout(timer);
@@ -63,7 +66,12 @@ export function ManagerProvider({ children }: { children: ReactNode }) {
       timer = setTimeout(() => void refreshTonight(), 5000);
     };
     const offData = onDataChanged(soon);
-    const appState = AppState.addEventListener("change", (s) => s === "active" && soon());
+    void checkLateAlerts(); // catch up on start (first run only sets the starting point)
+    const appState = AppState.addEventListener("change", (s) => {
+      if (s !== "active") return;
+      soon();
+      void checkLateAlerts();
+    });
     return () => {
       clearTimeout(timer);
       offData();

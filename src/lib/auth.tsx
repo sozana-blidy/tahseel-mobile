@@ -13,7 +13,10 @@ interface AuthState {
   profile: Profile | null;
   /** Profile could not be loaded because of the network (vs. "no profile"). */
   profileError: string | null;
+  /** Anonymous read-only guest (no profile; data only through the guest_* functions). */
+  isGuest: boolean;
   signIn(username: string, password: string): Promise<void>;
+  signInAsGuest(): Promise<void>;
   signOut(): Promise<void>;
   reloadProfile(): Promise<void>;
 }
@@ -31,7 +34,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Only the latest call may set state: a slow load that started before an invite
     // was claimed must not overwrite the fresh profile.
     const my = ++seq.current;
-    if (!s) {
+    if (!s || s.user.is_anonymous) {
       setProfile(null);
       setProfileError(null);
       return;
@@ -80,6 +83,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail(username), password });
         if (error) throw classifyError(error);
         await loadProfile(data.session);
+      },
+      isGuest: !!session?.user.is_anonymous,
+      async signInAsGuest() {
+        const { error } = await supabase.auth.signInAnonymously();
+        if (error) {
+          if (/anonymous.*disabled|not enabled/i.test(error.message)) throw new Error("دخول الضيوف غير مفعّل");
+          throw classifyError(error);
+        }
       },
       async signOut() {
         await supabase.auth.signOut({ scope: "local" });

@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Pressable, ScrollView, Switch, View } from "react-native";
 import { formatK } from "../lib/money";
 import { monthLabel } from "../lib/months";
-import { Chip, Field, Num, T } from "./kit";
+import { Badge, Chip, Field, Num, T } from "./kit";
 import { colors, space } from "./theme";
 
 /** Header with a back button (points right — RTL). */
@@ -108,4 +108,21 @@ export function localTime(iso: string | null | undefined): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, "0");
   return ltr(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`);
+}
+
+/** «فاتورتين»: this month's invoice also carries a deferred one. */
+export function TwoBillsBadge() {
+  return <Badge label="فاتورتين" fg={colors.danger} bg={colors.dangerSoft} />;
+}
+
+/** The two invoices of one payment, each on its own line, then the total (amounts in thousands). */
+export function DueBreakdown({ month, remaining, carriedMonth, carriedAmount }: { month: string; remaining: number; carriedMonth: string | null; carriedAmount: number }) {
+  if (!carriedMonth || carriedAmount <= 0) return null;
+  return (
+    <View style={{ gap: space(1) }}>
+      <Line label={`فاتورة ${monthLabel(carriedMonth)} (مؤجلة)`} value={<Num w="medium">{formatK(carriedAmount)}</Num>} />
+      {remaining > 0 ? <Line label={`فاتورة ${monthLabel(month)}`} value={<Num w="medium">{formatK(remaining)}</Num>} /> : null}
+      <Line label="المجموع" value={<Num w="bold" color={colors.primary}>{formatK(carriedAmount + remaining)}</Num>} />
+    </View>
+  );
 }

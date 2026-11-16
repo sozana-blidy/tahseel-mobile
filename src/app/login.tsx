@@ -8,7 +8,7 @@ import { Button, Card, Field, T } from "../ui/kit";
 import { colors, space } from "../ui/theme";
 
 export default function Login() {
-  const { signIn } = useAuth();
+  const { signIn, signInAsGuest } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,6 +25,18 @@ export default function Login() {
       await signIn(username, password);
     } catch (e) {
       setError((e as AppError).message ?? "تعذر تسجيل الدخول");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function guest() {
+    setBusy(true);
+    setError(null);
+    try {
+      await signInAsGuest(); // routing moves to /guest, where the guest code is asked
+    } catch (e) {
+      setError((e as Error).message ?? "تعذر دخول الضيف");
     } finally {
       setBusy(false);
     }
@@ -64,6 +76,7 @@ export default function Login() {
             <Button title="دخول" onPress={submit} loading={busy} big />
           </Card>
           <Button title="معتمد جديد؟ أدخل رمز الدعوة" variant="ghost" onPress={() => router.push("/join")} />
+          <Button title="دخول كضيف (عرض فقط)" variant="secondary" onPress={guest} disabled={busy} />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

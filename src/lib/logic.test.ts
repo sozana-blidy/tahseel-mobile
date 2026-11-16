@@ -116,7 +116,8 @@ function row(p: Partial<SubscriberRow>): SubscriberRow {
   return {
     id: "x", code: "S-1", full_name: "x", father_name: null, username: null, phone: null, area_id: "A", area_name: "الهنادي",
     package_label: "2M", monthly_amount: 100_000, sub_status: "active", invoice_id: "i", amount: 100_000, paid: 0, exempt: 0,
-    remaining: 100_000, status: "unpaid", paid_by_agent: false, last_paid_at: null, paid_via: null, ...p, display_name: p.full_name ?? "x",
+    remaining: 100_000, status: "unpaid", paid_by_agent: false, last_paid_at: null, paid_via: null,
+    carried_month: null, carried_amount: 0, deferred_to: null, never_disconnect: false, ...p, display_name: p.full_name ?? "x",
   };
 }
 
@@ -151,25 +152,28 @@ describe("agent list", () => {
   });
 });
 
+describe("agent list with a deferred invoice («فاتورتين»)", () => {
+  const rows = [
+    row({ id: "1", full_name: "علي", remaining: 100_000, carried_month: "2026-10", carried_amount: 100_000 }),
+    // this month already settled but the carried one is not: still open, due = carried only
+    row({ id: "2", full_name: "سامر", status: "paid", paid: 100_000, remaining: 0, carried_month: "2026-10", carried_amount: 80_000 }),
+    row({ id: "3", full_name: "فادي" }),
+  ];
+  it("one tap pays both; totals count both", () => {
+    const d = toDisplayRows(rows, [], "2026-11");
+    expect(d[0]).toMatchObject({ display: "unpaid", canMark: true, due: 200_000 });
+    expect(d[1]).toMatchObject({ display: "unpaid", canMark: true, due: 80_000 });
+    expect(filterRows(d, "", "unpaid", null).map((r) => r.id)).toEqual(["1", "2", "3"]);
+    expect(totals(d)).toMatchObject({ openCount: 3, open: 380_000 });
+    const sending = toDisplayRows(rows, [{ clientKey: "k", subscriberId: "1", month: "2026-11", name: "", areaName: "", amount: 200_000, createdAt: "", state: "pending", attempts: 0 }], "2026-11");
+    expect(sending[0]).toMatchObject({ display: "sending", canMark: false });
+  });
+});
+
 describe("three-part names", async () => {
+  const { NAME_CASES } = await import("./nameCases");
   const { displayName } = await import("./names");
-  it.each([
-    ["علي عروس", "أحمد", "علي أحمد عروس"],
-    ["أحمد سلطان", "فايز", "أحمد فايز سلطان"],
-    ["عبد الله غضبان", "سمير", "عبد الله سمير غضبان"],
-    ["نور الدين راعي", "ميهوب", "نور الدين ميهوب راعي"],
-    ["ذو الفقار غضبان", "علي", "ذو الفقار علي غضبان"],
-    ["هدى عبد الله", "علي", "هدى علي عبد الله"],
-    ["يوسف الذكرى", "عبد الرحمن", "يوسف عبد الرحمن الذكرى"],
-    ["سمير الفاضل", "عبد الحميد", "سمير عبد الحميد الفاضل"],
-    ["زياد سامي عروس", "سامي", "زياد سامي عروس"],
-    ["علي صالح", "صالح", "علي صالح"],
-    ["علي صالح 2", "محمود", "علي محمود صالح 2"],
-    ["أبو عبدو", null, "أبو عبدو"],
-    ["أبو عبدو", "مدجنة", "أبو عبدو مدجنة"],
-    ["عبد مسعود", "ابراهيم", "عبد مسعود ابراهيم"],
-    ["مخفر الهنادي", "", "مخفر الهنادي"],
-  ])("%s + %s → %s", (full, father, out) => expect(displayName(full, father)).toBe(out));
+  it.each(NAME_CASES)("%s + %s → %s", (full, father, out) => expect(displayName(full, father)).toBe(out));
 });
 
 describe("daily summary text", async () => {
