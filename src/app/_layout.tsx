@@ -30,7 +30,7 @@ export default function RootLayout() {
 }
 
 function Gate({ fontsReady }: { fontsReady: boolean }) {
-  const { loading, session, profile } = useAuth();
+  const { loading, session, profile, isGuest } = useAuth();
   const ready = fontsReady && !loading;
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
@@ -64,11 +64,14 @@ function Gate({ fontsReady }: { fontsReady: boolean }) {
         <Stack.Screen name="login" />
       </Stack.Protected>
       {/* join stays reachable after sign-up until the invite is claimed */}
-      <Stack.Protected guard={!signedIn || !profile}>
+      <Stack.Protected guard={!isGuest && (!signedIn || !profile)}>
         <Stack.Screen name="join" />
       </Stack.Protected>
-      <Stack.Protected guard={signedIn && !profile}>
+      <Stack.Protected guard={signedIn && !isGuest && !profile}>
         <Stack.Screen name="inactive" />
+      </Stack.Protected>
+      <Stack.Protected guard={signedIn && isGuest}>
+        <Stack.Screen name="guest" />
       </Stack.Protected>
       <Stack.Protected guard={signedIn && profile?.role === "agent"}>
         <Stack.Screen name="agent/index" />

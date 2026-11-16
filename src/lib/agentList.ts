@@ -1,6 +1,6 @@
 import { buildSearchable, scoreMatch, type Searchable } from "./arabic";
 import type { PendingPayment } from "./paymentQueue";
-import type { RowStatus, SubscriberRow } from "./types";
+import { amountDue, type RowStatus, type SubscriberRow } from "./types";
 
 export type ListFilter = "unpaid" | "paid" | "all";
 
@@ -9,7 +9,7 @@ export type DisplayStatus = RowStatus | "sending";
 
 export interface DisplayRow extends SubscriberRow {
   display: DisplayStatus;
-  /** Amount the "تم الدفع" button will record (full remaining invoice). */
+  /** Amount the "تم الدفع" button will record: full remaining invoice + a carried (deferred) one. */
   due: number;
   canMark: boolean;
   search: Searchable;
@@ -18,13 +18,16 @@ export interface DisplayRow extends SubscriberRow {
 export function toDisplayRows(rows: SubscriberRow[], pending: PendingPayment[], month: string): DisplayRow[] {
   const sending = new Set(pending.filter((p) => p.state === "pending" && p.month === month).map((p) => p.subscriberId));
   return rows.map((r) => {
-    const isSending = sending.has(r.id) && r.status === "unpaid";
-    const display: DisplayStatus = isSending ? "sending" : r.status;
+    const due = amountDue(r);
+    const open = due > 0 && (r.status === "unpaid" || r.carried_amount > 0);
+    const isSending = sending.has(r.id) && open;
+    // a carried invoice keeps the row open even if this month's own invoice is settled
+    const display: DisplayStatus = isSending ? "sending" : open ? "unpaid" : r.status;
     return {
       ...r,
       display,
-      due: r.remaining,
-      canMark: !isSending && r.status === "unpaid" && r.remaining > 0,
+      due,
+      canMark: !isSending && open,
       search: buildSearchable({ fullName: r.display_name, fatherName: r.father_name ?? "", username: r.username ?? "", code: r.code, phone: r.phone ?? "" }),
     };
   });
@@ -65,7 +68,7 @@ export function totals(rows: DisplayRow[]): AgentTotals {
     if (r.display === "unpaid") {
       t.collected += r.paid; // 0 except a legacy part-paid invoice — money received still counts
       t.openCount++;
-      t.open += r.remaining;
+      t.open += r.due;
     }
   }
   return t;

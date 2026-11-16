@@ -14,6 +14,7 @@ import { unpaidSheet } from "../../lib/agentExport";
 import type { AppError } from "../../lib/errors";
 import { shareXlsx } from "../../lib/share";
 import { Badge, Banner, Button, Card, Chip, Num, Sheet, T, s as kit } from "../../ui/kit";
+import { DueBreakdown, TwoBillsBadge } from "../../ui/parts";
 import { STATUS } from "../../ui/status";
 import { colors, font, space } from "../../ui/theme";
 
@@ -220,6 +221,9 @@ export default function AgentHome() {
                 <Num w="bold" size={32} color={colors.primary}>{formatK(confirmRow.due)}</Num>
                 <T color={colors.muted}>ألف ل.س</T>
               </View>
+              {data.month ? (
+                <DueBreakdown month={data.month} remaining={confirmRow.remaining} carriedMonth={confirmRow.carried_month} carriedAmount={confirmRow.carried_amount} />
+              ) : null}
             </View>
             <T size={14} color={colors.danger}>بعد التأكيد لا يمكنك التعديل أو التراجع. أي تصحيح يتم عن طريق المدير فقط.</T>
             <Button title="تأكيد — تم الدفع" onPress={confirmPaid} loading={saving} big />
@@ -248,12 +252,15 @@ function Row({ row, showArea, onPay }: { row: DisplayRow; showArea: boolean; onP
     <Card style={{ padding: space(3.5), gap: space(2.5) }}>
       <View style={{ flexDirection: "row", gap: space(3), alignItems: "flex-start" }}>
         <View style={{ flex: 1, gap: 2 }}>
-          <T w="bold" size={17}>{row.display_name}</T>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space(2), flexWrap: "wrap" }}>
+            <T w="bold" size={17}>{row.display_name}</T>
+            {row.carried_amount > 0 ? <TwoBillsBadge /> : null}
+          </View>
           {sub ? <T size={14} color={colors.muted}>{sub}</T> : null}
         </View>
         <View style={{ alignItems: "flex-end", gap: space(1) }}>
           <Badge label={st.label} fg={st.fg} bg={st.bg} />
-          {row.amount !== null && row.amount > 0 && <Num w="medium" size={15}>{formatK(row.display === "unpaid" ? row.remaining : row.amount)}</Num>}
+          {row.amount !== null && row.amount > 0 && <Num w="medium" size={15}>{formatK(row.display === "unpaid" ? row.due : row.amount)}</Num>}
         </View>
       </View>
       {row.canMark && <Button title={`تم الدفع · ${k(row.due)}`} onPress={onPay} />}

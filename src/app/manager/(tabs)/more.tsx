@@ -8,8 +8,10 @@ import type { AppError } from "../../../lib/errors";
 import { useManager } from "../../../lib/managerContext";
 import { monthLabel } from "../../../lib/months";
 import { buildMonthReport, reportTitle } from "../../../lib/report";
+import { rpc } from "../../../lib/rpc";
 import { shareXlsx } from "../../../lib/share";
-import { Banner, Button, Card, T } from "../../../ui/kit";
+import { useLoad } from "../../../lib/useLoad";
+import { Banner, Button, Card, Field, T } from "../../../ui/kit";
 import { MonthBar } from "../../../ui/parts";
 import { colors, space } from "../../../ui/theme";
 
@@ -51,6 +53,8 @@ export default function More() {
           <Button title="استيراد من Excel" variant="secondary" onPress={() => router.push("/manager/import")} />
         </Card>
 
+        <GuestCodeCard />
+
         <Card style={{ gap: space(2) }}>
           <T w="bold" size={17}>الحساب</T>
           <T color={colors.muted}>{profile?.full_name} · المدير</T>
@@ -65,5 +69,41 @@ export default function More() {
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/** Guest (read-only) access: the manager sets the code; only its hash is stored on the server. */
+function GuestCodeCard() {
+  const enabled = useLoad(() => rpc<boolean>("guest_code_enabled"), []);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+
+  async function save(next: string) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await rpc<{ enabled: boolean }>("set_guest_code", { p_code: next });
+      setCode("");
+      setMsg({ tone: "info", text: r.enabled ? "تم حفظ الرمز الجديد — خرج كل الضيوف الحاليين" : "تم إيقاف دخول الضيوف" });
+      await enabled.refresh();
+    } catch (e) {
+      setMsg({ tone: "error", text: (e as AppError).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card style={{ gap: space(3) }}>
+      <T w="bold" size={17}>دخول الضيوف (عرض فقط)</T>
+      <T color={colors.muted}>
+        {enabled.data === undefined ? "…" : enabled.data ? "مفعّل. الضيف يرى أسماء المشتركين وحالة الدفع فقط — بدون مبالغ أو هواتف." : "غير مفعّل."}
+      </T>
+      <Field label={enabled.data ? "رمز جديد" : "رمز الضيف"} value={code} onChangeText={setCode} autoCapitalize="none" autoCorrect={false} hint="6 أحرف أو أرقام على الأقل. لا يُحفظ إلا مُشفّراً." ltr />
+      {msg ? <Banner tone={msg.tone} text={msg.text} /> : null}
+      <Button title={enabled.data ? "تغيير الرمز" : "تفعيل بهذا الرمز"} onPress={() => (code.trim().length < 6 ? setMsg({ tone: "error", text: "6 أحرف أو أرقام على الأقل" }) : save(code))} loading={busy} />
+      {enabled.data ? <Button title="إيقاف دخول الضيوف" variant="ghost" onPress={() => save("")} disabled={busy} /> : null}
+    </Card>
   );
 }

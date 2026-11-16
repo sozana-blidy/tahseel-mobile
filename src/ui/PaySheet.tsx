@@ -6,7 +6,7 @@ import { formatK } from "../lib/money";
 import { monthLabel, today } from "../lib/months";
 import { newKey, rpc } from "../lib/rpc";
 import { Button, Field, Num, Sheet, T } from "./kit";
-import { Options } from "./parts";
+import { DueBreakdown, Options } from "./parts";
 import { colors, space } from "./theme";
 
 export type Method = "manager_cash" | "agent_cash" | "shamcash";
@@ -16,13 +16,16 @@ export interface PayTarget {
   name: string;
   month: string;
   remaining: number;
+  /** A deferred invoice carried into this month — paid in the same action. */
+  carriedMonth?: string | null;
+  carriedAmount?: number;
   /** Active agent of the subscriber's area, if any. */
   agentName: string | null;
 }
 
 /**
- * Manager records a payment of the full remaining invoice (never a part of it): cash to
- * manager, cash held by the area's agent, or Sham Cash with a transfer number.
+ * Manager records a payment of the full amount due (never a part of it) — this month's invoice
+ * plus a carried (deferred) one: cash to manager, cash held by the area's agent, or Sham Cash.
  */
 export function PaySheet({ target, onClose }: { target: PayTarget | null; onClose: () => void }) {
   const [method, setMethod] = useState<Method>("manager_cash");
@@ -49,7 +52,7 @@ export function PaySheet({ target, onClose }: { target: PayTarget | null; onClos
       await rpc("manager_record_payment", {
         p_subscriber_id: target.subscriberId,
         p_month: target.month,
-        p_amount: null, // server records the full remaining invoice
+        p_amount: null, // server records the full amount due (both invoices when one is carried)
         p_method: method,
         p_client_key: key.current,
         p_reference: method === "shamcash" ? reference.trim() : null,
@@ -76,9 +79,10 @@ export function PaySheet({ target, onClose }: { target: PayTarget | null; onClos
             <T w="bold" size={20}>تسجيل دفعة</T>
             <T color={colors.muted}>{target.name} · {monthLabel(target.month)}</T>
             <T size={14} color={colors.muted}>
-              المبلغ (الفاتورة كاملة): <Num w="bold" color={colors.open}>{formatK(target.remaining)}</Num> ألف
+              المبلغ (الفاتورة كاملة): <Num w="bold" color={colors.open}>{formatK(target.remaining + (target.carriedAmount ?? 0))}</Num> ألف
             </T>
           </View>
+          <DueBreakdown month={target.month} remaining={target.remaining} carriedMonth={target.carriedMonth ?? null} carriedAmount={target.carriedAmount ?? 0} />
           <Options value={method} options={methods} onChange={setMethod} />
           {method === "shamcash" && <Field label="رقم العملية" value={reference} onChangeText={setReference} autoCapitalize="none" ltr />}
           {error ? <T color={colors.danger}>{error}</T> : null}

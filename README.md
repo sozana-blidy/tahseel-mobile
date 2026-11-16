@@ -9,7 +9,8 @@ Backend: Supabase (Postgres + RLS + SECURITY DEFINER functions + Realtime).
 ```
 supabase/migrations/   schema, security (RLS), functions — apply in order
 supabase/tests/        local Postgres harness + rule tests (not deployed)
-docs/                  SUPABASE-SETUP.md, BUILD-APK.md, GOTCHAS.md
+docs/                  SUPABASE-SETUP.md, BUILD-APK.md, EDGE-FUNCTIONS.md, GOTCHAS.md
+supabase/functions/    admin-users (Edge Function: agent accounts / password reset)
 supabase/scripts/      reset_test_data.sql (clears test data before the real import)
                        reset_payments.sql (⚠️ deletes all payments/exemptions/agent tx; keeps invoices)
 plugins/               withReleaseSigning.js (release key from Gradle properties)

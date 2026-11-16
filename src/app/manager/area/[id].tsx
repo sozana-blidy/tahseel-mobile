@@ -9,14 +9,16 @@ import { loadAreaRows, loadAreas } from "../../../lib/managerData";
 import { formatK } from "../../../lib/money";
 import { monthLabel } from "../../../lib/months";
 import { buildMonthReport } from "../../../lib/report";
+import { newKey } from "../../../lib/rpc";
 import { shareXlsx } from "../../../lib/share";
 import type { AppError } from "../../../lib/errors";
-import type { RowStatus, SubscriberRow } from "../../../lib/types";
+import { amountDue, type RowStatus, type SubscriberRow } from "../../../lib/types";
 import { useLoad } from "../../../lib/useLoad";
 import { AddSubscriberSheet } from "../../../ui/AddSubscriberSheet";
 import { Badge, Banner, Card, Chip, Num, T, s as kit } from "../../../ui/kit";
 import { PaySheet, type PayTarget } from "../../../ui/PaySheet";
-import { Empty, Header, Progress } from "../../../ui/parts";
+import { Empty, Header, Progress, TwoBillsBadge } from "../../../ui/parts";
+import { DeferSheet } from "../../../ui/DeferSheet";
 import { STATUS } from "../../../ui/status";
 import { colors, font, space } from "../../../ui/theme";
 
@@ -39,6 +41,7 @@ export default function AreaScreen() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("open");
   const [pay, setPay] = useState<PayTarget | null>(null);
+  const [defer, setDefer] = useState<{ row: SubscriberRow; key: string } | null>(null);
   const [adding, setAdding] = useState(false);
 
   const [exporting, setExporting] = useState(false);
@@ -145,11 +148,13 @@ export default function AreaScreen() {
           <SubRow
             row={item}
             onOpen={() => router.push({ pathname: "/manager/subscriber/[id]", params: { id: item.id } })}
-            onPay={() => setPay({ subscriberId: item.id, name: item.display_name, month: m.month, remaining: item.remaining, agentName: agent?.full_name ?? null })}
+            onPay={() => setPay({ subscriberId: item.id, name: item.display_name, month: m.month, remaining: item.remaining, carriedMonth: item.carried_month, carriedAmount: item.carried_amount, agentName: agent?.full_name ?? null })}
+            onDefer={() => setDefer({ row: item, key: newKey() })}
           />
         )}
       />
       <PaySheet target={pay} onClose={() => setPay(null)} />
+      {defer && <DeferSheet row={defer.row} month={m.month} clientKey={defer.key} onClose={() => setDefer(null)} />}
       <AddSubscriberSheet visible={adding} areaId={id} areaName={areaName} onClose={() => setAdding(false)} />
     </SafeAreaView>
   );
@@ -158,30 +163,43 @@ export default function AreaScreen() {
 const VIA: Record<string, string> = { agent_cash: "عبر المعتمد", shamcash: "عبر شام كاش", manager_cash: "نقداً للمدير" };
 const viaLabel = (v: string | null) => (v ? v.split(",").map((m) => VIA[m] ?? m).join(" + ") : null);
 
-function SubRow({ row, onOpen, onPay }: { row: SubscriberRow; onOpen: () => void; onPay: () => void }) {
+function SubRow({ row, onOpen, onPay, onDefer }: { row: SubscriberRow; onOpen: () => void; onPay: () => void; onDefer: () => void }) {
   const st = STATUS[row.status];
   const info = [row.package_label, row.username].filter(Boolean).join(" \u200F· ");
-  const canPay = row.status === "unpaid" && row.remaining > 0;
+  const due = amountDue(row);
+  const canPay = due > 0 && (row.status === "unpaid" || row.carried_amount > 0);
+  const canDefer = row.status === "unpaid" && row.remaining > 0 && !row.deferred_to && row.carried_amount === 0;
   return (
     <Pressable onPress={onOpen} accessibilityRole="button">
       <Card style={{ padding: space(3.5), flexDirection: "row", alignItems: "center", gap: space(3) }}>
         <View style={{ flex: 1, gap: 2 }}>
-          <T w="bold" size={17}>{row.display_name}</T>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space(2), flexWrap: "wrap" }}>
+            <T w="bold" size={17}>{row.display_name}</T>
+            {row.carried_amount > 0 ? <TwoBillsBadge /> : undefined}
+          </View>
           {info ? <T size={14} color={colors.muted}>{info}</T> : undefined}
-          <View style={{ flexDirection: "row", alignItems: "center", gap: space(2), marginTop: 2 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space(2), marginTop: 2, flexWrap: "wrap" }}>
             <Badge label={st.label} fg={st.fg} bg={st.bg} />
+            {row.deferred_to ? <Badge label={`مؤجّل إلى ${monthLabel(row.deferred_to)}`} fg={colors.open} bg={colors.openSoft} /> : undefined}
             {row.status === "paid" && viaLabel(row.paid_via) ? (
               <T size={12} color={row.paid_via === "shamcash" ? colors.sending : colors.muted}>{viaLabel(row.paid_via)}</T>
             ) : undefined}
           </View>
         </View>
         <View style={{ alignItems: "flex-end", gap: space(1.5) }}>
-          {row.amount !== null && <Num w="medium">{formatK(row.status === "unpaid" ? row.remaining : row.amount)}</Num>}
-          {canPay && (
-            <Pressable onPress={onPay} hitSlop={6} style={{ backgroundColor: colors.primarySoft, borderRadius: 10, paddingHorizontal: space(3), paddingVertical: space(1.5) }}>
-              <T w="bold" size={14} color={colors.primary}>دفع</T>
-            </Pressable>
-          )}
+          {row.amount !== null && <Num w="medium">{formatK(canPay ? due : row.amount)}</Num>}
+          <View style={{ flexDirection: "row", gap: space(2) }}>
+            {canDefer && (
+              <Pressable onPress={onDefer} hitSlop={6} style={{ backgroundColor: colors.openSoft, borderRadius: 10, paddingHorizontal: space(3), paddingVertical: space(1.5) }}>
+                <T w="bold" size={14} color={colors.open}>تأجيل</T>
+              </Pressable>
+            )}
+            {canPay && (
+              <Pressable onPress={onPay} hitSlop={6} style={{ backgroundColor: colors.primarySoft, borderRadius: 10, paddingHorizontal: space(3), paddingVertical: space(1.5) }}>
+                <T w="bold" size={14} color={colors.primary}>دفع</T>
+              </Pressable>
+            )}
+          </View>
         </View>
       </Card>
     </Pressable>

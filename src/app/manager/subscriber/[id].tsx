@@ -8,14 +8,16 @@ import { useManager } from "../../../lib/managerContext";
 import { loadSubscriber, loadSubscriberHistory, type HistoryMonth, type Ledger, type SubscriberDetail } from "../../../lib/managerData";
 import { formatK } from "../../../lib/money";
 import { monthLabel, shiftMonth } from "../../../lib/months";
-import { rpc } from "../../../lib/rpc";
+import { newKey, rpc } from "../../../lib/rpc";
+import { amountDue } from "../../../lib/types";
 import { useLoad } from "../../../lib/useLoad";
 import { displayName } from "../../../lib/names";
 import { parseSpeedInput } from "../../../ui/AddSubscriberSheet";
 import { Badge, Banner, Button, Card, Field, Num, T } from "../../../ui/kit";
 import { ConfirmSheet, ReasonSheet, SheetFrame } from "../../../ui/sheets";
 import { PaySheet, type PayTarget } from "../../../ui/PaySheet";
-import { Header, Line, localTime, ltr, ToggleRow } from "../../../ui/parts";
+import { DueBreakdown, Header, Line, localTime, ltr, ToggleRow, TwoBillsBadge } from "../../../ui/parts";
+import { DeferSheet } from "../../../ui/DeferSheet";
 import { STATUS } from "../../../ui/status";
 import { colors, space } from "../../../ui/theme";
 
@@ -29,7 +31,7 @@ export default function SubscriberScreen() {
   // so a failure here never hides the rest of the screen.
   const history = useLoad(() => loadSubscriberHistory(id), [id]);
   const [pay, setPay] = useState<PayTarget | null>(null);
-  const [sheet, setSheet] = useState<null | "exempt" | "edit" | "disconnect" | "reconnect" | { reverse: Ledger; kind: "payment" | "exemption" }>(null);
+  const [sheet, setSheet] = useState<null | "exempt" | "edit" | "disconnect" | "reconnect" | "cancelDefer" | { defer: string } | { reverse: Ledger; kind: "payment" | "exemption" }>(null);
 
   if (!data) {
     return (
@@ -41,7 +43,9 @@ export default function SubscriberScreen() {
   }
   const { sub, row } = data;
   const st = row ? STATUS[row.status] : null;
-  const open = row && row.status === "unpaid" && row.remaining > 0;
+  const due = row ? amountDue(row) : 0;
+  const open = !!row && due > 0 && (row.status === "unpaid" || row.carried_amount > 0);
+  const canDefer = !!row && row.status === "unpaid" && row.remaining > 0 && !row.deferred_to && row.carried_amount === 0;
   const movements = [
     ...data.payments.map((p) => ({ kind: "payment" as const, l: p })),
     ...data.exemptions.map((e) => ({ kind: "exemption" as const, l: e })),
@@ -59,8 +63,14 @@ export default function SubscriberScreen() {
         <Card style={{ gap: space(2) }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
             <T w="bold" size={17}>{monthLabel(m.month)}</T>
-            {st && <Badge label={st.label} fg={st.fg} bg={st.bg} />}
+            <View style={{ flexDirection: "row", gap: space(2) }}>
+              {row && row.carried_amount > 0 ? <TwoBillsBadge /> : null}
+              {st && <Badge label={st.label} fg={st.fg} bg={st.bg} />}
+            </View>
           </View>
+          {row?.deferred_to ? (
+            <Banner tone="warn" text={`فاتورة هذا الشهر مؤجّلة إلى ${monthLabel(row.deferred_to)} وتُدفع مع فاتورته. لا يُفصل المشترك خلال التأجيل.`} />
+          ) : null}
           {row && row.amount !== null ? (
             <>
               <Line label="الفاتورة" value={<Num w="medium">{formatK(row.amount)}</Num>} />
@@ -73,15 +83,18 @@ export default function SubscriberScreen() {
               {sub.monthly_amount === null ? "لا يوجد سعر — حدّد السرعة من «تعديل»." : sub.status === "disconnected" ? "مفصول — لا فاتورة." : "لا توجد فاتورة لهذا الشهر."}
             </T>
           )}
+          {row ? <DueBreakdown month={m.month} remaining={row.remaining} carriedMonth={row.carried_month} carriedAmount={row.carried_amount} /> : null}
           {open && (
             <View style={{ gap: space(2), marginTop: space(1) }}>
               <Button
-                title={`تسجيل دفعة · ${formatK(row.remaining)} ألف`}
-                onPress={() => setPay({ subscriberId: sub.id, name: displayName(sub.full_name, sub.father_name), month: m.month, remaining: row.remaining, agentName: data.areaAgent?.full_name ?? null })}
+                title={`تسجيل دفعة · ${formatK(due)} ألف`}
+                onPress={() => setPay({ subscriberId: sub.id, name: displayName(sub.full_name, sub.father_name), month: m.month, remaining: row.remaining, carriedMonth: row.carried_month, carriedAmount: row.carried_amount, agentName: data.areaAgent?.full_name ?? null })}
               />
-              <Button title="إعفاء هذا الشهر" variant="secondary" onPress={() => setSheet("exempt")} />
+              {canDefer && <Button title="تأجيل إلى الشهر القادم" variant="secondary" onPress={() => setSheet({ defer: newKey() })} />}
+              {row.status === "unpaid" && row.remaining > 0 && <Button title="إعفاء هذا الشهر" variant="secondary" onPress={() => setSheet("exempt")} />}
             </View>
           )}
+          {row?.deferred_to ? <Button title="إلغاء التأجيل" variant="ghost" onPress={() => setSheet("cancelDefer")} /> : null}
         </Card>
 
         {movements.length > 0 && (
@@ -123,6 +136,18 @@ export default function SubscriberScreen() {
       </ScrollView>
 
       <PaySheet target={pay} onClose={() => setPay(null)} />
+      {sheet && typeof sheet === "object" && "defer" in sheet && row && (
+        <DeferSheet row={row} month={m.month} clientKey={sheet.defer} onClose={() => setSheet(null)} />
+      )}
+      {sheet === "cancelDefer" && row && (
+        <ConfirmSheet
+          title="إلغاء التأجيل"
+          body={`تعود فاتورة ${monthLabel(m.month)} مستحقة في شهرها. يمكن التأجيل مرة أخرى لاحقاً.`}
+          action="إلغاء التأجيل"
+          onClose={() => setSheet(null)}
+          run={() => rpc("cancel_deferral", { p_subscriber_id: sub.id, p_month: m.month })}
+        />
+      )}
       {sheet === "exempt" && row && (
         <ReasonSheet
           title={`إعفاء ${monthLabel(m.month)}`}
@@ -132,7 +157,7 @@ export default function SubscriberScreen() {
           run={(reason, key) => rpc("set_month_exempt", { p_subscriber_id: sub.id, p_month: m.month, p_reason: reason, p_client_key: key })}
         />
       )}
-      {sheet && typeof sheet === "object" && (
+      {sheet && typeof sheet === "object" && "reverse" in sheet && (
         <ReasonSheet
           title="تصحيح حركة"
           note={`سيُسجَّل قيد عكسي بقيمة ${formatK(sheet.reverse.amount)} ألف. لا يُحذف شيء من السجل.`}

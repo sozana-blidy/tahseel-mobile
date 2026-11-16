@@ -44,3 +44,9 @@
 - 2026-11-16: No partial payments since migration 0006: `manager_record_payment` accepts only the full remaining amount; legacy part-paid invoices show as «غير مدفوع» with only the remainder due.
 - 2026-11-16: pnpm (hoisted) prints "Packages: +11 -48" when adding 2 packages — that is node_modules being re-hoisted, not dependencies removed. Compare the lockfile `packages:` list to be sure.
 - 2026-11-16: R8 strips WorkDatabase_Impl constructor (WorkManager via expo-background-task) → crash at launch; keep rules via extraProguardRules.
+- 2026-11-16: Supabase anonymous (guest) users get the `authenticated` role — only the JWT claim `is_anonymous` tells them apart. Never grant by role alone; guest functions check `auth.jwt()->>'is_anonymous'` AND an unlocked guest session.
+- 2026-11-16: A PL/pgSQL `raise` rolls back everything in that call — `guest_unlock` RETURNS {ok:false} on a wrong code so the failed attempt (rate limit) is kept.
+- 2026-11-16: Supabase CAPTCHA (Attack Protection) applies to ALL sign-ins — enabling it without app support blocks manager/agent logins. Use the anonymous sign-in rate limit + guest code instead.
+- 2026-11-16: Edge Function `index.ts` is Deno (npm:/jsr: imports) → excluded from `tsc` in tsconfig.json; its pure logic lives in `logic.ts` (type-checked + vitest).
+- 2026-11-16: Paying a carried (deferred) invoice writes TWO payment rows: client_key and client_key + ':carried'. Idempotency checks both keys.
+- 2026-11-16: Late-payment DB tests use months relative to now() (payments are stamped with now()), not the fixed test month.

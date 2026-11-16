@@ -18,7 +18,9 @@ import { loadDailyCollections } from "./managerData";
 import { NIGHT_GENERIC_BODY, NIGHT_PREFIX, NIGHT_TITLE, nightId, nightlyBody, upcomingNights } from "./nightly";
 import type { Role } from "./types";
 
-const CHANNEL = "tahseel-alerts-v2";
+/** The one notification channel (sound + vibration). Also used for late-payment alerts. */
+export const ALERT_CHANNEL = "tahseel-alerts-v2";
+const CHANNEL = ALERT_CHANNEL;
 const OLD_CHANNELS = ["reminders"];
 const ROLE_KEY = "tahseel.reminders.role";
 const MANAGER_ROUTE = "/manager/notifications";
@@ -37,7 +39,7 @@ const AGENT = {
   route: "/agent?export=1",
 };
 
-async function ensureChannel() {
+export async function ensureAlertChannel() {
   if (Platform.OS !== "android") return;
   await Notifications.setNotificationChannelAsync(CHANNEL, {
     name: "تنبيهات تحصيل",
@@ -79,6 +81,11 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
   const next = chain.then(fn, fn);
   chain = next.catch(() => {});
   return next;
+}
+
+/** The role notifications were last set up for on this phone (works in a background run too). */
+export async function storedReminderRole(): Promise<string | null> {
+  return AsyncStorage.getItem(ROLE_KEY);
 }
 
 /**
@@ -125,7 +132,7 @@ export async function setupReminders(role: Role | null): Promise<boolean> {
     else await AsyncStorage.removeItem(ROLE_KEY);
     await registerNightlyTask(role === "manager");
     if (!role) return true;
-    await ensureChannel();
+    await ensureAlertChannel();
     let perm = await Notifications.getPermissionsAsync();
     if (!perm.granted && perm.canAskAgain) perm = await Notifications.requestPermissionsAsync();
     if (!perm.granted) return false;

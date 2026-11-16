@@ -2,6 +2,7 @@ import { useLocalSearchParams } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { RefreshControl, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { credentialsFileName, credentialsSheet, PASSWORD_WARNING, resetAgentPassword } from "../../../lib/accounts";
 import { emitDataChanged } from "../../../lib/bus";
 import type { AppError } from "../../../lib/errors";
 import { useManager } from "../../../lib/managerContext";
@@ -9,6 +10,7 @@ import { loadAgents, loadAgentTx, loadAreas, loadCompensation, type AgentTx } fr
 import { formatK, parseK } from "../../../lib/money";
 import { monthLabel, today } from "../../../lib/months";
 import { newKey, rpc } from "../../../lib/rpc";
+import { shareXlsx } from "../../../lib/share";
 import { useLoad } from "../../../lib/useLoad";
 import { Banner, Button, Card, Chip, Field, Num, T } from "../../../ui/kit";
 import { Header, Line, localTime, MoneyField, MonthBar, Options, Stat } from "../../../ui/parts";
@@ -27,7 +29,7 @@ export default function AgentScreen() {
     const [agents, comp, tx, areas] = await Promise.all([loadAgents(m.month), loadCompensation(id, m.month), loadAgentTx(id, m.month), loadAreas()]);
     return { agent: agents.find((a) => a.profile.id === id) ?? null, comp, tx, areas };
   }, [id, m.month]);
-  const [sheet, setSheet] = useState<null | { tx: TxType; amount: number } | { reverse: AgentTx } | "areas" | "comp" | "toggle">(null);
+  const [sheet, setSheet] = useState<null | { tx: TxType; amount: number } | { reverse: AgentTx } | "areas" | "comp" | "toggle" | "password">(null);
 
   const a = data?.agent;
   if (!a) {
@@ -122,6 +124,7 @@ export default function AgentScreen() {
           <Line label="المناطق" value={a.areas.map((x) => x.name).join("، ") || "—"} />
           {p.phone ? <Line label="الهاتف" value={<Num>{p.phone}</Num>} /> : null}
           <Button title="تعديل المناطق" variant="secondary" onPress={() => setSheet("areas")} />
+          {p.active && <Button title="إعادة تعيين كلمة المرور" variant="secondary" onPress={() => setSheet("password")} />}
           <Button title={p.active ? "إيقاف الحساب" : "إعادة تفعيل الحساب"} variant="ghost" onPress={() => setSheet("toggle")} />
         </Card>
       </ScrollView>
@@ -141,6 +144,23 @@ export default function AgentScreen() {
       )}
       {sheet === "areas" && <AreasSheet agentId={id} current={a.areas.map((x) => x.id)} all={data!.areas} onClose={() => setSheet(null)} />}
       {sheet === "comp" && <CompSheet agentId={id} type={p.comp_type} amount={p.comp_amount} onClose={() => setSheet(null)} />}
+      {sheet === "password" && (
+        <ConfirmSheet
+          title="إعادة تعيين كلمة المرور"
+          body={`تُنشأ كلمة مرور جديدة لـ ${p.full_name} وتتوقف القديمة فوراً. تصلك في ملف Excel — ${PASSWORD_WARNING}.`}
+          action="إعادة التعيين"
+          onClose={() => setSheet(null)}
+          run={async () => {
+            const results = await resetAgentPassword(id);
+            try {
+              await shareXlsx([credentialsSheet(results)], credentialsFileName(), `كلمة مرور ${p.full_name}`);
+            } catch {
+              // the old password is already gone; retrying simply issues another new one
+              throw new Error("تغيّرت كلمة المرور لكن تعذر حفظ الملف — اضغط مرة أخرى لإنشاء كلمة جديدة");
+            }
+          }}
+        />
+      )}
       {sheet === "toggle" && (
         <ConfirmSheet
           title={p.active ? "إيقاف الحساب" : "إعادة التفعيل"}
