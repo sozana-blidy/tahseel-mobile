@@ -124,7 +124,8 @@ describe("agent list", () => {
   const rows = [
     row({ id: "1", full_name: "علي أحمد", status: "unpaid" }),
     row({ id: "2", full_name: "أحمد محمد", status: "paid", paid: 100_000, remaining: 0 }),
-    row({ id: "3", full_name: "محمود", status: "partial", amount: 200_000, paid: 50_000, remaining: 150_000 }),
+    // legacy part-paid invoice: the server reports it as unpaid with only the remaining amount due
+    row({ id: "3", full_name: "محمود", status: "unpaid", amount: 200_000, paid: 50_000, remaining: 150_000 }),
     row({ id: "4", full_name: "نقطة", status: "exempt", amount: 0, remaining: 0 }),
     row({ id: "5", full_name: "فادي", area_id: "B", area_name: "فديو" }),
   ];
@@ -133,7 +134,7 @@ describe("agent list", () => {
 
   it("an unsent tap shows as sending and cannot be tapped again", () => {
     expect(d[0]).toMatchObject({ display: "sending", canMark: false });
-    expect(d[2]).toMatchObject({ display: "partial", canMark: true, due: 150_000 });
+    expect(d[2]).toMatchObject({ display: "unpaid", canMark: true, due: 150_000 });
     expect(d[3].canMark).toBe(false);
     expect(toDisplayRows(rows, pending, "2026-10")[0].display).toBe("unpaid");
   });
@@ -183,13 +184,56 @@ describe("daily summary text", async () => {
   });
 });
 
+describe("damascus clock and evening-only summary", async () => {
+  const { damascusNow, damascusInstant, addDays, hhmm } = await import("./damascus");
+  const { visibleSummary, dailyLine: line } = await import("./dailyText");
+  it("uses fixed UTC+3 regardless of the phone's zone", () => {
+    expect(damascusNow(new Date("2026-11-16T18:59:00Z"))).toEqual({ day: "2026-11-16", hour: 21, minute: 59 });
+    expect(damascusNow(new Date("2026-11-16T21:30:00Z"))).toEqual({ day: "2026-11-17", hour: 0, minute: 30 }); // after midnight there
+    expect(damascusInstant("2026-11-16", 22).toISOString()).toBe("2026-11-16T19:00:00.000Z");
+    expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+    expect(addDays("2026-03-01", -1)).toBe("2026-02-28");
+    expect(hhmm({ day: "2026-11-16", hour: 9, minute: 5 })).toBe("09:05");
+  });
+  it("hides today's lines before 22:00 and keeps earlier days", () => {
+    const lines = [{ day: "2026-11-16", n: 1 }, { day: "2026-11-15", n: 2 }];
+    expect(visibleSummary(lines, damascusNow(new Date("2026-11-16T18:59:00Z")))).toEqual({ lines: [{ day: "2026-11-15", n: 2 }], todayHidden: true });
+    expect(visibleSummary(lines, damascusNow(new Date("2026-11-16T19:00:00Z")))).toEqual({ lines, todayHidden: false });
+    expect(line({ amount: 900_000, area_name: "الهنادي", agent_name: "علي قدار" })).toBe("تم دفع 900,000 ل.س لمعتمد الهنادي علي قدار");
+  });
+});
+
+describe("manager 22:00 notification", async () => {
+  const { upcomingNights, nightlyBody, nightId } = await import("./nightly");
+  const { damascusNow } = await import("./damascus");
+  const at = (iso: string) => damascusNow(new Date(iso));
+  it("pre-schedules 7 nights: tonight before 22:00, from tomorrow after", () => {
+    const before = upcomingNights(at("2026-11-16T18:59:00Z"));
+    expect(before).toHaveLength(7);
+    expect(before[0]).toBe("2026-11-16");
+    expect(before[6]).toBe("2026-11-22");
+    expect(upcomingNights(at("2026-11-16T19:00:00Z"))[0]).toBe("2026-11-17");
+    expect(nightId("2026-11-16")).toBe("manager-summary-2026-11-16");
+  });
+  it("lists today's per-area counts with the time they were taken", () => {
+    const clock = at("2026-11-16T18:40:00Z"); // 21:40 Damascus
+    const lines = [
+      { day: "2026-11-16", area_name: "الهنادي", agent_name: "علي قدار", amount: 900_000, invoices: 7 },
+      { day: "2026-11-16", area_name: "فديو", agent_name: "ايليا ضويا", amount: 100_000, invoices: 1 },
+      { day: "2026-11-15", area_name: "الهنادي", agent_name: "علي قدار", amount: 50_000, invoices: 1 },
+    ];
+    expect(nightlyBody(lines, clock)).toBe("الهنادي — علي قدار: 7 فواتير (900,000)\nفديو — ايليا ضويا: 1 فاتورة (100,000)\n(حتى 21:40)");
+    expect(nightlyBody([], clock)).toBe("لم تصل دفعات عبر المعتمدين اليوم (حتى 21:40)");
+  });
+});
+
 describe("agent unpaid export", async () => {
   const { unpaidSheet } = await import("./agentExport");
   it("lists only open invoices with the remaining amount and a total row", () => {
     const rows = [
       row({ id: "1", full_name: "علي عروس", father_name: "أحمد", status: "unpaid", remaining: 100_000 }),
       row({ id: "2", full_name: "سامر", status: "paid", remaining: 0 }),
-      row({ id: "3", full_name: "محمود", status: "partial", remaining: 150_000 }),
+      row({ id: "3", full_name: "محمود", status: "unpaid", remaining: 150_000 }),
       row({ id: "4", full_name: "نقطة", status: "exempt", remaining: 0 }),
     ].map((r) => ({ ...r, display_name: r.id === "1" ? "علي أحمد عروس" : r.full_name }));
     const x = unpaidSheet(rows, "علي قدار", "2026-11");

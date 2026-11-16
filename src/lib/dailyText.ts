@@ -1,4 +1,13 @@
+import { isSummaryTime, type DamascusClock } from "./damascus";
 import { formatFull } from "./money";
+
+export const SUMMARY_PENDING_TEXT = "يظهر ملخص اليوم الساعة 10 مساءً";
+
+/** The daily summary is an evening thing: before 22:00 Damascus, today's lines are hidden. */
+export function visibleSummary<L extends { day: string }>(lines: L[], clock: DamascusClock): { lines: L[]; todayHidden: boolean } {
+  if (isSummaryTime(clock)) return { lines, todayHidden: false };
+  return { lines: lines.filter((l) => l.day !== clock.day), todayHidden: true };
+}
 
 /** «تم دفع 4,000,000 ل.س لمعتمد الهنادي علي قدار» */
 export function dailyLine(l: { amount: number; area_name: string; agent_name: string | null }): string {

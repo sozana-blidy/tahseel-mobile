@@ -15,7 +15,6 @@ export interface AreaSummary {
   remaining: number;
   paid_count: number;
   unpaid_count: number;
-  partial_count: number;
   exempt_count: number;
 }
 
@@ -27,7 +26,7 @@ function nums<T>(r: Record<string, unknown>, keys: string[]): T {
 
 export async function loadOverview(month: string): Promise<AreaSummary[]> {
   const rows = await rpc<Record<string, unknown>[]>("area_overview", { p_month: month });
-  return rows.map((r) => nums<AreaSummary>(r, ["subscribers", "expected", "paid", "exempt", "remaining", "paid_count", "unpaid_count", "partial_count", "exempt_count"]));
+  return rows.map((r) => nums<AreaSummary>(r, ["subscribers", "expected", "paid", "exempt", "remaining", "paid_count", "unpaid_count", "exempt_count"]));
 }
 
 export async function loadAreaRows(month: string, areaId: string): Promise<SubscriberRow[]> {
@@ -103,6 +102,28 @@ export async function loadSubscriber(id: string, month: string): Promise<Subscri
     names,
     pricePerMbps: toNum(price?.value ?? 50000) || 50000,
   };
+}
+
+/** One of the 3 most recent billing months of a subscriber (manager only — subscriber_history). */
+export interface HistoryMonth {
+  month: string;
+  invoice_amount: number | null;
+  status: "paid" | "unpaid" | "exempt" | "no_invoice";
+  paid_amount: number | null;
+  /** Damascus wall time "YYYY-MM-DD HH:MM" of the latest live payment. */
+  paid_at: string | null;
+  /** Comma-separated live payment methods. */
+  method: string | null;
+  recorded_by: string | null;
+}
+
+export async function loadSubscriberHistory(id: string): Promise<HistoryMonth[]> {
+  const rows = await rpc<Record<string, unknown>[]>("subscriber_history", { p_subscriber_id: id });
+  return rows.map((r) => ({
+    ...(r as unknown as HistoryMonth),
+    invoice_amount: r.invoice_amount === null ? null : toNum(r.invoice_amount),
+    paid_amount: r.paid_amount === null ? null : toNum(r.paid_amount),
+  }));
 }
 
 export interface AgentCashRow {

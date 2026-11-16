@@ -10,7 +10,7 @@ import { normalizeRow, type SubscriberRow } from "./types";
 import type { XSheet } from "./xlsx";
 
 const STATUS_AR: Record<SubscriberRow["status"], string> = {
-  paid: "مدفوع", unpaid: "غير مدفوع", partial: "دفع جزئي", exempt: "معفى",
+  paid: "مدفوع", unpaid: "غير مدفوع", exempt: "معفى",
   no_invoice: "لا فاتورة", no_price: "بدون سعر", disconnected: "مفصول",
 };
 const METHOD_AR: Record<string, string> = { agent_cash: "عند المعتمد", manager_cash: "نقداً للمدير", shamcash: "شام كاش" };
@@ -42,16 +42,16 @@ export async function buildMonthReport(month: string, areaId?: string): Promise<
   const areas = areaId ? overview.filter((a) => a.area_id === areaId) : overview;
   const sheets: XSheet[] = [];
 
-  const sum = areas.reduce((t, a) => ({ s: t.s + a.subscribers, p: t.p + a.paid_count, pa: t.pa + a.partial_count, u: t.u + a.unpaid_count, e: t.e + a.exempt_count, ex: t.ex + a.expected, pd: t.pd + a.paid, xm: t.xm + a.exempt, r: t.r + a.remaining }), { s: 0, p: 0, pa: 0, u: 0, e: 0, ex: 0, pd: 0, xm: 0, r: 0 });
+  const sum = areas.reduce((t, a) => ({ s: t.s + a.subscribers, p: t.p + a.paid_count, u: t.u + a.unpaid_count, e: t.e + a.exempt_count, ex: t.ex + a.expected, pd: t.pd + a.paid, xm: t.xm + a.exempt, r: t.r + a.remaining }), { s: 0, p: 0, u: 0, e: 0, ex: 0, pd: 0, xm: 0, r: 0 });
   sheets.push({
     name: "الملخص",
     rows: [
-      ["المنطقة", "المعتمد", "المشتركون", "دفعوا", "جزئي", "لم يدفعوا", "معفى", "المطلوب", "المدفوع", "الإعفاءات", "الباقي", "مكتملة"],
-      ...areas.map((a) => [a.area_name, a.agent_name ?? "المدير", a.subscribers, a.paid_count, a.partial_count, a.unpaid_count, a.exempt_count, a.expected, a.paid, a.exempt, a.remaining, a.remaining === 0 && a.expected > 0 ? "نعم" : "لا"]),
-      ...(areaId ? [] : [["المجموع", null, sum.s, sum.p, sum.pa, sum.u, sum.e, sum.ex, sum.pd, sum.xm, sum.r, null]]),
+      ["المنطقة", "المعتمد", "المشتركون", "دفعوا", "لم يدفعوا", "معفى", "المطلوب", "المدفوع", "الإعفاءات", "الباقي", "مكتملة"],
+      ...areas.map((a) => [a.area_name, a.agent_name ?? "المدير", a.subscribers, a.paid_count, a.unpaid_count, a.exempt_count, a.expected, a.paid, a.exempt, a.remaining, a.remaining === 0 && a.expected > 0 ? "نعم" : "لا"]),
+      ...(areaId ? [] : [["المجموع", null, sum.s, sum.p, sum.u, sum.e, sum.ex, sum.pd, sum.xm, sum.r, null]]),
     ],
-    widths: [16, 16, 11, 9, 8, 10, 8, 14, 14, 12, 14, 9],
-    moneyCols: [7, 8, 9, 10],
+    widths: [16, 16, 11, 9, 10, 8, 14, 14, 12, 14, 9],
+    moneyCols: [6, 7, 8, 9],
     totalRow: !areaId,
   });
 
@@ -70,7 +70,7 @@ export async function buildMonthReport(month: string, areaId?: string): Promise<
       widths: [16, 26, 12, 14, 14, 12, 14, 12, 12, 12, 12],
       moneyCols: [3, 4, 5, 6, 8, 9, 10],
     });
-    const open = rows.filter((r) => r.status === "unpaid" || r.status === "partial");
+    const open = rows.filter((r) => r.status === "unpaid");
     sheets.push({ name: "غير المدفوعين", rows: [SUB_HEAD, ...open.map((r) => subLine(r, methods))], widths: SUB_W, moneyCols: SUB_MONEY });
   }
 

@@ -11,6 +11,7 @@ supabase/migrations/   schema, security (RLS), functions — apply in order
 supabase/tests/        local Postgres harness + rule tests (not deployed)
 docs/                  SUPABASE-SETUP.md, BUILD-APK.md, GOTCHAS.md
 supabase/scripts/      reset_test_data.sql (clears test data before the real import)
+                       reset_payments.sql (⚠️ deletes all payments/exemptions/agent tx; keeps invoices)
 plugins/               withReleaseSigning.js (release key from Gradle properties)
 src/app/               screens (Expo Router): login, join, inactive, agent/,
                        manager/(tabs) [areas, agents, notifications], manager/area, subscriber, agent, invite

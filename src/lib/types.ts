@@ -13,7 +13,7 @@ export interface Profile {
   comp_amount: number;
 }
 
-export type RowStatus = "paid" | "unpaid" | "partial" | "exempt" | "no_invoice" | "no_price" | "disconnected";
+export type RowStatus = "paid" | "unpaid" | "exempt" | "no_invoice" | "no_price" | "disconnected";
 
 /** One row of public.area_subscribers(month). Bigints arrive as numbers or strings — normalize with toNum. */
 export interface SubscriberRow {

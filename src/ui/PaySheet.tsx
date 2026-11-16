@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 import { emitDataChanged } from "../lib/bus";
 import type { AppError } from "../lib/errors";
-import { formatK, parseK } from "../lib/money";
+import { formatK } from "../lib/money";
 import { monthLabel, today } from "../lib/months";
 import { newKey, rpc } from "../lib/rpc";
 import { Button, Field, Num, Sheet, T } from "./kit";
-import { MoneyField, Options } from "./parts";
+import { Options } from "./parts";
 import { colors, space } from "./theme";
 
 export type Method = "manager_cash" | "agent_cash" | "shamcash";
@@ -21,11 +21,10 @@ export interface PayTarget {
 }
 
 /**
- * Manager records a payment: full (default) or partial, cash to manager, cash
- * held by the area's agent, or Sham Cash with a transfer number.
+ * Manager records a payment of the full remaining invoice (never a part of it): cash to
+ * manager, cash held by the area's agent, or Sham Cash with a transfer number.
  */
 export function PaySheet({ target, onClose }: { target: PayTarget | null; onClose: () => void }) {
-  const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<Method>("manager_cash");
   const [reference, setReference] = useState("");
   const [busy, setBusy] = useState(false);
@@ -34,7 +33,6 @@ export function PaySheet({ target, onClose }: { target: PayTarget | null; onClos
 
   useEffect(() => {
     if (target) {
-      setAmount(formatK(target.remaining));
       setMethod("manager_cash");
       setReference("");
       setError(null);
@@ -44,9 +42,6 @@ export function PaySheet({ target, onClose }: { target: PayTarget | null; onClos
 
   async function save() {
     if (!target) return;
-    const v = parseK(amount);
-    if (v === null || v <= 0) return setError("مبلغ غير صحيح");
-    if (v > target.remaining) return setError(`أكبر من الباقي (${formatK(target.remaining)})`);
     if (method === "shamcash" && !reference.trim()) return setError("رقم عملية شام كاش مطلوب");
     setBusy(true);
     setError(null);
@@ -54,7 +49,7 @@ export function PaySheet({ target, onClose }: { target: PayTarget | null; onClos
       await rpc("manager_record_payment", {
         p_subscriber_id: target.subscriberId,
         p_month: target.month,
-        p_amount: v,
+        p_amount: null, // server records the full remaining invoice
         p_method: method,
         p_client_key: key.current,
         p_reference: method === "shamcash" ? reference.trim() : null,
@@ -81,10 +76,9 @@ export function PaySheet({ target, onClose }: { target: PayTarget | null; onClos
             <T w="bold" size={20}>تسجيل دفعة</T>
             <T color={colors.muted}>{target.name} · {monthLabel(target.month)}</T>
             <T size={14} color={colors.muted}>
-              الباقي: <Num w="bold" color={colors.open}>{formatK(target.remaining)}</Num> ألف
+              المبلغ (الفاتورة كاملة): <Num w="bold" color={colors.open}>{formatK(target.remaining)}</Num> ألف
             </T>
           </View>
-          <MoneyField label="المبلغ" value={amount} onChange={setAmount} hint="اتركه كما هو لدفع الفاتورة كاملة" />
           <Options value={method} options={methods} onChange={setMethod} />
           {method === "shamcash" && <Field label="رقم العملية" value={reference} onChangeText={setReference} autoCapitalize="none" ltr />}
           {error ? <T color={colors.danger}>{error}</T> : null}

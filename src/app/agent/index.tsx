@@ -220,7 +220,6 @@ export default function AgentHome() {
                 <Num w="bold" size={32} color={colors.primary}>{formatK(confirmRow.due)}</Num>
                 <T color={colors.muted}>ألف ل.س</T>
               </View>
-              {confirmRow.display === "partial" && <T size={14} color={colors.open}>المتبقي من الفاتورة بعد دفعة سابقة</T>}
             </View>
             <T size={14} color={colors.danger}>بعد التأكيد لا يمكنك التعديل أو التراجع. أي تصحيح يتم عن طريق المدير فقط.</T>
             <Button title="تأكيد — تم الدفع" onPress={confirmPaid} loading={saving} big />
@@ -254,12 +253,7 @@ function Row({ row, showArea, onPay }: { row: DisplayRow; showArea: boolean; onP
         </View>
         <View style={{ alignItems: "flex-end", gap: space(1) }}>
           <Badge label={st.label} fg={st.fg} bg={st.bg} />
-          {row.amount !== null && row.amount > 0 && row.display !== "partial" && <Num w="medium" size={15}>{formatK(row.amount)}</Num>}
-          {row.display === "partial" && (
-            <T size={13} color={colors.muted}>
-              باقي <Num w="bold" size={15} color={colors.open}>{formatK(row.remaining)}</Num> من {formatK(row.amount ?? 0)}
-            </T>
-          )}
+          {row.amount !== null && row.amount > 0 && <Num w="medium" size={15}>{formatK(row.display === "unpaid" ? row.remaining : row.amount)}</Num>}
         </View>
       </View>
       {row.canMark && <Button title={`تم الدفع · ${k(row.due)}`} onPress={onPay} />}

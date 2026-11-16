@@ -126,9 +126,7 @@ export default function Overview() {
                 </View>
                 <Progress value={a.paid + a.exempt} total={a.expected} />
                 <T size={13} color={colors.muted}>
-                  دفع {a.paid_count} من {a.subscribers} · مدفوع {formatK(a.paid)} من {formatK(a.expected)}
-                  {a.partial_count ? ` · جزئي ${a.partial_count}` : ""}
-                </T>
+                  دفع {a.paid_count} من {a.subscribers} · مدفوع {formatK(a.paid)} من {formatK(a.expected)}                </T>
               </Card>
             </Pressable>
           );

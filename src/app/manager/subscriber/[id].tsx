@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { emitDataChanged } from "../../../lib/bus";
 import type { AppError } from "../../../lib/errors";
 import { useManager } from "../../../lib/managerContext";
-import { loadSubscriber, type Ledger, type SubscriberDetail } from "../../../lib/managerData";
+import { loadSubscriber, loadSubscriberHistory, type HistoryMonth, type Ledger, type SubscriberDetail } from "../../../lib/managerData";
 import { formatK } from "../../../lib/money";
 import { monthLabel, shiftMonth } from "../../../lib/months";
 import { rpc } from "../../../lib/rpc";
@@ -15,7 +15,7 @@ import { parseSpeedInput } from "../../../ui/AddSubscriberSheet";
 import { Badge, Banner, Button, Card, Field, Num, T } from "../../../ui/kit";
 import { ConfirmSheet, ReasonSheet, SheetFrame } from "../../../ui/sheets";
 import { PaySheet, type PayTarget } from "../../../ui/PaySheet";
-import { Header, Line, localTime, ToggleRow } from "../../../ui/parts";
+import { Header, Line, localTime, ltr, ToggleRow } from "../../../ui/parts";
 import { STATUS } from "../../../ui/status";
 import { colors, space } from "../../../ui/theme";
 
@@ -25,6 +25,9 @@ export default function SubscriberScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const m = useManager();
   const { data, error, loading, refresh } = useLoad(() => loadSubscriber(id, m.month), [id, m.month]);
+  // Manager only (this route is under /manager and the function refuses agents). Loaded separately
+  // so a failure here never hides the rest of the screen.
+  const history = useLoad(() => loadSubscriberHistory(id), [id]);
   const [pay, setPay] = useState<PayTarget | null>(null);
   const [sheet, setSheet] = useState<null | "exempt" | "edit" | "disconnect" | "reconnect" | { reverse: Ledger; kind: "payment" | "exemption" }>(null);
 
@@ -38,7 +41,7 @@ export default function SubscriberScreen() {
   }
   const { sub, row } = data;
   const st = row ? STATUS[row.status] : null;
-  const open = row && (row.status === "unpaid" || row.status === "partial") && row.remaining > 0;
+  const open = row && row.status === "unpaid" && row.remaining > 0;
   const movements = [
     ...data.payments.map((p) => ({ kind: "payment" as const, l: p })),
     ...data.exemptions.map((e) => ({ kind: "exemption" as const, l: e })),
@@ -49,7 +52,7 @@ export default function SubscriberScreen() {
       <Header title={displayName(sub.full_name, sub.father_name)} subtitle={`${data.areaName} · ${sub.code}`} />
       <ScrollView
         contentContainerStyle={{ padding: space(4), paddingTop: 0, gap: space(3), paddingBottom: space(10) }}
-        refreshControl={<RefreshControl refreshing={loading} onRefresh={refresh} colors={[colors.primary]} />}
+        refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { refresh(); history.refresh(); }} colors={[colors.primary]} />}
       >
         {error && <Banner tone="error" text={error} />}
 
@@ -89,6 +92,14 @@ export default function SubscriberScreen() {
             ))}
           </Card>
         )}
+
+        <Card style={{ gap: space(3) }}>
+          <T w="bold">سجل آخر 3 أشهر</T>
+          {history.error ? <T color={colors.danger}>{history.error}</T> : null}
+          {!history.data && !history.error ? <T color={colors.muted}>جارٍ التحميل…</T> : null}
+          {history.data?.length === 0 ? <T color={colors.muted}>لا توجد أشهر مفتوحة بعد.</T> : null}
+          {history.data?.map((h) => <HistoryRow key={h.month} h={h} />)}
+        </Card>
 
         <Card style={{ gap: space(1) }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: space(1) }}>
@@ -154,6 +165,26 @@ export default function SubscriberScreen() {
         />
       )}
     </SafeAreaView>
+  );
+}
+
+function HistoryRow({ h }: { h: HistoryMonth }) {
+  const st = STATUS[h.status];
+  const via = h.method ? h.method.split(",").map((x) => METHOD[x] ?? x).join(" + ") : null;
+  const paidLine = h.paid_at ? [ltr(h.paid_at), via, h.recorded_by].filter(Boolean).join(" · ") : null;
+  return (
+    <View style={{ gap: 2 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+        <T w="medium">{monthLabel(h.month)}</T>
+        <Badge label={st.label} fg={st.fg} bg={st.bg} />
+      </View>
+      {h.invoice_amount !== null ? (
+        <T size={13} color={colors.muted}>
+          الفاتورة <Num size={13}>{formatK(h.invoice_amount)}</Num> · المدفوع <Num size={13} color={h.paid_amount ? colors.paid : colors.muted}>{formatK(h.paid_amount ?? 0)}</Num>
+        </T>
+      ) : null}
+      {paidLine ? <T size={13} color={colors.muted}>{paidLine}</T> : null}
+    </View>
   );
 }
 

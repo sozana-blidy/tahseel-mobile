@@ -18,19 +18,19 @@ export interface DisplayRow extends SubscriberRow {
 export function toDisplayRows(rows: SubscriberRow[], pending: PendingPayment[], month: string): DisplayRow[] {
   const sending = new Set(pending.filter((p) => p.state === "pending" && p.month === month).map((p) => p.subscriberId));
   return rows.map((r) => {
-    const isSending = sending.has(r.id) && (r.status === "unpaid" || r.status === "partial");
+    const isSending = sending.has(r.id) && r.status === "unpaid";
     const display: DisplayStatus = isSending ? "sending" : r.status;
     return {
       ...r,
       display,
       due: r.remaining,
-      canMark: !isSending && (r.status === "unpaid" || r.status === "partial") && r.remaining > 0,
+      canMark: !isSending && r.status === "unpaid" && r.remaining > 0,
       search: buildSearchable({ fullName: r.display_name, fatherName: r.father_name ?? "", username: r.username ?? "", code: r.code, phone: r.phone ?? "" }),
     };
   });
 }
 
-const OPEN: DisplayStatus[] = ["unpaid", "partial"];
+const OPEN: DisplayStatus[] = ["unpaid"];
 const DONE: DisplayStatus[] = ["paid", "sending", "exempt"];
 
 /** A search query ignores the status filter, so a paid person is still found (and shown as paid). */
@@ -61,10 +61,9 @@ export function totals(rows: DisplayRow[]): AgentTotals {
     if (r.display === "paid" || r.display === "sending") {
       t.collectedCount++;
       t.collected += r.display === "sending" ? r.paid + r.due : r.paid;
-    } else if (r.display === "partial") {
-      t.collected += r.paid;
     }
-    if (r.display === "unpaid" || r.display === "partial") {
+    if (r.display === "unpaid") {
+      t.collected += r.paid; // 0 except a legacy part-paid invoice — money received still counts
       t.openCount++;
       t.open += r.remaining;
     }

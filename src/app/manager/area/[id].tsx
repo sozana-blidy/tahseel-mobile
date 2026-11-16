@@ -22,7 +22,7 @@ import { colors, font, space } from "../../../ui/theme";
 
 type Filter = "open" | "paid" | "exempt" | "other" | "all";
 const IN: Record<Filter, RowStatus[] | null> = {
-  open: ["unpaid", "partial"],
+  open: ["unpaid"],
   paid: ["paid"],
   exempt: ["exempt"],
   other: ["no_invoice", "no_price", "disconnected"],
@@ -161,7 +161,7 @@ const viaLabel = (v: string | null) => (v ? v.split(",").map((m) => VIA[m] ?? m)
 function SubRow({ row, onOpen, onPay }: { row: SubscriberRow; onOpen: () => void; onPay: () => void }) {
   const st = STATUS[row.status];
   const info = [row.package_label, row.username].filter(Boolean).join(" \u200F· ");
-  const canPay = (row.status === "unpaid" || row.status === "partial") && row.remaining > 0;
+  const canPay = row.status === "unpaid" && row.remaining > 0;
   return (
     <Pressable onPress={onOpen} accessibilityRole="button">
       <Card style={{ padding: space(3.5), flexDirection: "row", alignItems: "center", gap: space(3) }}>
@@ -170,13 +170,13 @@ function SubRow({ row, onOpen, onPay }: { row: SubscriberRow; onOpen: () => void
           {info ? <T size={14} color={colors.muted}>{info}</T> : undefined}
           <View style={{ flexDirection: "row", alignItems: "center", gap: space(2), marginTop: 2 }}>
             <Badge label={st.label} fg={st.fg} bg={st.bg} />
-            {(row.status === "paid" || row.status === "partial") && viaLabel(row.paid_via) ? (
+            {row.status === "paid" && viaLabel(row.paid_via) ? (
               <T size={12} color={row.paid_via === "shamcash" ? colors.sending : colors.muted}>{viaLabel(row.paid_via)}</T>
             ) : undefined}
           </View>
         </View>
         <View style={{ alignItems: "flex-end", gap: space(1.5) }}>
-          {row.amount !== null && <Num w="medium">{row.status === "partial" ? `باقي ${formatK(row.remaining)}` : formatK(row.amount)}</Num>}
+          {row.amount !== null && <Num w="medium">{formatK(row.status === "unpaid" ? row.remaining : row.amount)}</Num>}
           {canPay && (
             <Pressable onPress={onPay} hitSlop={6} style={{ backgroundColor: colors.primarySoft, borderRadius: 10, paddingHorizontal: space(3), paddingVertical: space(1.5) }}>
               <T w="bold" size={14} color={colors.primary}>دفع</T>

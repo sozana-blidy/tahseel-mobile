@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { emitDataChanged } from "./bus";
+import { AppState } from "react-native";
+import { emitDataChanged, onDataChanged } from "./bus";
 import { currentMonth } from "./months";
+import { refreshTonight } from "./reminders";
 import { q } from "./rpc";
 import { supabase } from "./supabase";
 
@@ -51,6 +53,23 @@ export function ManagerProvider({ children }: { children: ReactNode }) {
       supabase.removeChannel(channel);
     };
   }, [reloadMonths]);
+
+  // Tonight's 22:00 notification carries today's counts: re-schedule it whenever manager data
+  // refreshes (writes, live agent payments) and when the app comes back to the foreground.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const soon = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void refreshTonight(), 5000);
+    };
+    const offData = onDataChanged(soon);
+    const appState = AppState.addEventListener("change", (s) => s === "active" && soon());
+    return () => {
+      clearTimeout(timer);
+      offData();
+      appState.remove();
+    };
+  }, []);
 
   const setMonthPicked = useCallback((m: string) => {
     picked.current = true;
