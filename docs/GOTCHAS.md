@@ -37,3 +37,10 @@
 - 2026-11-16: `sdkmanager` CLI is blocked by Smart App Control (nio.dll) — install SDK components from the Android Studio UI.
 - 2026-11-16: `prebuild --clean` EBUSY on `android` = a terminal still `cd`'d into it (or a Gradle daemon). Leave the folder / `gradlew --stop`.
 - 2026-11-16: After moving the repo folder, pnpm wants to recreate node_modules (stored virtualStoreDir path). Run `pnpm install` in a normal terminal and accept.
+- 2026-11-16: Honor phones (and other aggressive OEMs) must disable battery optimization for Tahseel (Settings → Battery → App launch → Tahseel → Manage manually, all on), or the 22:00 notification and its background refresh are delayed or skipped.
+- 2026-11-16: Damascus time in the app = fixed UTC+3 (`src/lib/damascus.ts`). Syria has had no DST since Oct 2022; avoids relying on Hermes/phone time-zone data. If Syria ever changes its clock, change it there (the DB uses 'Asia/Damascus').
+- 2026-11-16: Android notification channel settings (sound, importance) are frozen once created — change them only by creating a NEW channel id (now `tahseel-alerts-v2`) and deleting the old one.
+- 2026-11-16: Background tasks (expo-task-manager) must be defined at bundle load — a headless run renders no route, so `_layout` never loads. They are imported from the app entry `index.js` (package.json "main"), before `expo-router/entry`.
+- 2026-11-16: No partial payments since migration 0006: `manager_record_payment` accepts only the full remaining amount; legacy part-paid invoices show as «غير مدفوع» with only the remainder due.
+- 2026-11-16: pnpm (hoisted) prints "Packages: +11 -48" when adding 2 packages — that is node_modules being re-hoisted, not dependencies removed. Compare the lockfile `packages:` list to be sure.
+- 2026-11-16: R8 strips WorkDatabase_Impl constructor (WorkManager via expo-background-task) → crash at launch; keep rules via extraProguardRules.

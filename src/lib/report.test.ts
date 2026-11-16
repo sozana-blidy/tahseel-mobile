@@ -14,8 +14,8 @@ vi.mock("./rpc", () => ({
 }));
 vi.mock("./managerData", () => ({
   loadOverview: async () => [
-    { area_id: "A", area_name: "الهنادي", agent_id: "g", agent_name: "علي قدار", subscribers: 2, expected: 300000, paid: 200000, exempt: 0, remaining: 100000, paid_count: 1, unpaid_count: 1, partial_count: 0, exempt_count: 0 },
-    { area_id: "B", area_name: "الخرنوبة", agent_id: null, agent_name: null, subscribers: 1, expected: 0, paid: 0, exempt: 0, remaining: 0, paid_count: 0, unpaid_count: 0, partial_count: 0, exempt_count: 0 },
+    { area_id: "A", area_name: "الهنادي", agent_id: "g", agent_name: "علي قدار", subscribers: 2, expected: 300000, paid: 200000, exempt: 0, remaining: 100000, paid_count: 1, unpaid_count: 1, exempt_count: 0 },
+    { area_id: "B", area_name: "الخرنوبة", agent_id: null, agent_name: null, subscribers: 1, expected: 0, paid: 0, exempt: 0, remaining: 0, paid_count: 0, unpaid_count: 0, exempt_count: 0 },
   ],
   loadAreaRows: async () => [],
   loadAgents: async () => [{ profile: { id: "g", full_name: "علي قدار", comp_type: "monthly_salary" }, areas: [{ id: "A", name: "الهنادي" }], cash: [], totals: { collected: 200000, delivered: 150000, deductions: 0, holding: 50000, count: 1 } }],
@@ -31,9 +31,9 @@ describe("monthly report", () => {
     expect(r.fileName).toBe("تحصيل-2026-11.xlsx");
     expect(r.sheets.map((s) => s.name)).toEqual(["الملخص", "المعتمدون", "غير المدفوعين", "الهنادي", "الخرنوبة"]);
     const summary = r.sheets[0].rows;
-    expect(summary[1]).toEqual(["الهنادي", "علي قدار", 2, 1, 0, 1, 0, 300000, 200000, 0, 100000, "لا"]);
+    expect(summary[1]).toEqual(["الهنادي", "علي قدار", 2, 1, 1, 0, 300000, 200000, 0, 100000, "لا"]);
     expect(summary[2][1]).toBe("المدير");
-    expect(summary[3]).toEqual(["المجموع", null, 3, 1, 0, 1, 0, 300000, 200000, 0, 100000, null]);
+    expect(summary[3]).toEqual(["المجموع", null, 3, 1, 1, 0, 300000, 200000, 0, 100000, null]);
     expect(r.sheets[1].rows[1]).toEqual(["علي قدار", "الهنادي", 1, 200000, 150000, 0, 50000, "راتب شهري", 500000, 0, 500000]);
     expect(r.sheets[2].rows.slice(1).map((x) => x[1])).toEqual(["سامر"]);
     const hnadi = r.sheets[3].rows;

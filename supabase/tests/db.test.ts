@@ -121,6 +121,12 @@ async function fixture() {
 const status = async (uid: string, sub: string, month = M) =>
   (await one<{ status: string; remaining: string; paid: string }>(uid, "select status, remaining, paid from public.area_subscribers($1) where id = $2", [month, sub]));
 
+/** A part payment made before 0006 (the API no longer accepts one) — inserted directly as legacy data. */
+const legacyPart = (sub: string, amount: number, method: string, recordedBy: string, agentId: string | null = null) =>
+  su(`insert into public.payments (invoice_id, subscriber_id, area_id, month, amount, method, agent_id, recorded_by)
+      select i.id, i.subscriber_id, i.area_id, i.month, $2, $3, $4, $5 from public.invoices i where i.subscriber_id = $1 and i.month = $6`,
+    [sub, amount, method, agentId, recordedBy, M]);
+
 /* ---------------- tests ---------------- */
 
 describe("row-level security", () => {
@@ -208,13 +214,23 @@ describe("agent «تم الدفع»", () => {
 });
 
 describe("manager operations", () => {
-  it("partial + agent remainder, overpay blocked, agentless area needs manager cash, Sham Cash ref unique, reversal", async () => {
+  it("full invoice only (part and over amounts refused), agentless area needs manager cash, Sham Cash ref unique, reversal", async () => {
     const f = await fixture();
-    await as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'manager_cash', $3)", [f.subs["محمود خالد"], M, key()]);
-    expect(await status(f.managerId, f.subs["محمود خالد"])).toMatchObject({ status: "partial", remaining: "100000" });
-    const r = await one<{ r: { amount: number } }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [f.subs["محمود خالد"], M, key()]);
-    expect(r.r.amount).toBe(100000);
-    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, 300000, 'manager_cash', $3)", [f.subs["فراس"], M, key()])).rejects.toThrow(/أكبر من المتبقي/);
+    const mahmoud = f.subs["محمود خالد"]; // invoice 150,000
+    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'manager_cash', $3)", [mahmoud, M, key()])).rejects.toThrow(/كاملة فقط/);
+    await expect(as(f.managerId, "select public.manager_record_payment($1, $2, 300000, 'manager_cash', $3)", [f.subs["فراس"], M, key()])).rejects.toThrow(/كاملة فقط/);
+    expect(await status(f.managerId, mahmoud)).toMatchObject({ status: "unpaid", paid: "0", remaining: "150000" });
+    const r = await one<{ r: { amount: number } }>(f.managerId, "select public.manager_record_payment($1, $2, 150000, 'manager_cash', $3) r", [mahmoud, M, key()]);
+    expect(r.r.amount).toBe(150000); // exact remaining is accepted
+    expect(await status(f.managerId, mahmoud)).toMatchObject({ status: "paid", remaining: "0" });
+
+    // legacy part-paid invoice: listed as unpaid with only the remainder due; the agent's tap pays the rest
+    const ali = f.subs["علي أحمد عروس"]; // invoice 200,000
+    await legacyPart(ali, 50000, "manager_cash", f.managerId);
+    expect(await status(f.managerId, ali)).toMatchObject({ status: "unpaid", paid: "50000", remaining: "150000" });
+    expect((await one<{ r: { amount: number } }>(f.kadar, "select public.agent_mark_paid($1, $2, $3) r", [ali, M, key()])).r.amount).toBe(150000);
+    expect((await status(f.managerId, ali)).status).toBe("paid");
+    expect(await as(f.managerId, "select 1 from public.area_subscribers($1) where status = 'partial'", [M])).toHaveLength(0);
     await expect(as(f.managerId, "select public.manager_record_payment($1, $2, null, 'agent_cash', $3)", [f.subs["كامل"], M, key()])).rejects.toThrow(/بدون معتمد/);
     await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فادي"], M, key()]);
     await expect(as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فراس"], M, key()])).rejects.toThrow(/مسجّل مسبقاً/);
@@ -290,8 +306,8 @@ describe("agent cash and compensation", () => {
 
   it("per-invoice commission counts each invoice once, only when it went through the agent", async () => {
     const f = await fixture();
-    await as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'agent_cash', $3)", [f.subs["فادي"], M, key()]);
-    await one(f.elia, "select public.agent_mark_paid($1, $2, $3)", [f.subs["فادي"], M, key()]); // 2 installments → 1 invoice
+    await legacyPart(f.subs["فادي"], 50000, "agent_cash", f.managerId, f.elia);
+    await one(f.elia, "select public.agent_mark_paid($1, $2, $3)", [f.subs["فادي"], M, key()]); // 2 installments (legacy) → 1 invoice
     await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'X9')", [f.subs["فراس"], M, key()]); // company only → none
     const c = await one<{ r: { invoices: number; due: number } }>(f.managerId, "select public.agent_compensation($1, $2) r", [f.elia, M]);
     expect(c.r).toMatchObject({ invoices: 1, due: 5000 });
@@ -320,10 +336,34 @@ describe("daily summary (replaces per-payment notifications)", () => {
     const f = await fixture();
     await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["أحمد محمد"], M, key()]);
     await as(f.managerId, "select public.manager_record_payment($1, $2, null, 'shamcash', $3, 'SC-1')", [f.subs["فراس"], M, key()]);
-    await as(f.managerId, "select public.manager_record_payment($1, $2, 50000, 'manager_cash', $3)", [f.subs["محمود خالد"], M, key()]);
+    await legacyPart(f.subs["محمود خالد"], 50000, "manager_cash", f.managerId);
     await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [f.subs["محمود خالد"], M, key()]);
     const via = Object.fromEntries((await as<{ full_name: string; paid_via: string | null }>(f.managerId, "select full_name, paid_via from public.area_subscribers($1)", [M])).map((r) => [r.full_name, r.paid_via]));
     expect(via).toMatchObject({ "أحمد محمد": "agent_cash", "فراس": "shamcash", "محمود خالد": "agent_cash,manager_cash", "فادي": null });
+  });
+});
+
+describe("subscriber history (manager only)", () => {
+  it("last 3 billing months: status, net paid, Damascus time, method and recorder; agents refused", async () => {
+    const f = await fixture();
+    const prev = (n: number) => {
+      const [y, m] = M.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1 - n, 1)).toISOString().slice(0, 7);
+    };
+    for (const n of [3, 2, 1]) await as(f.managerId, "select public.open_month($1)", [prev(n)]);
+    const ahmad = f.subs["أحمد محمد"]; // 100,000 a month
+    await one(f.kadar, "select public.agent_mark_paid($1, $2, $3)", [ahmad, M, key()]);
+    await as(f.managerId, "select public.set_month_exempt($1, $2, 'عطل', $3)", [ahmad, prev(1), key()]);
+
+    const h = await as<{ month: string; invoice_amount: string; status: string; paid_amount: string; paid_at: string | null; method: string | null; recorded_by: string | null }>(
+      f.managerId, "select * from public.subscriber_history($1)", [ahmad]);
+    expect(h.map((r) => [r.month, r.status, r.paid_amount])).toEqual([[M, "paid", "100000"], [prev(1), "exempt", "0"], [prev(2), "unpaid", "0"]]);
+    expect(h[0]).toMatchObject({ invoice_amount: "100000", method: "agent_cash", recorded_by: "علي قدار" });
+    const day = (await su("select (now() at time zone 'Asia/Damascus')::date::text d"))[0].d;
+    expect(h[0].paid_at).toMatch(new RegExp(`^${day} \\d{2}:\\d{2}$`));
+    expect(h[2]).toMatchObject({ paid_at: null, method: null, recorded_by: null });
+
+    await expect(as(f.kadar, "select * from public.subscriber_history($1)", [ahmad])).rejects.toThrow(/للمدير فقط/);
   });
 });
 

@@ -5,7 +5,7 @@ import type { XSheet } from "./xlsx";
 
 /** The agent's unpaid list for the manager (full SYP, three-part names). */
 export function unpaidSheet(rows: SubscriberRow[], agentName: string, month: string): { sheets: XSheet[]; fileName: string; message: string } {
-  const open = rows.filter((r) => (r.status === "unpaid" || r.status === "partial") && r.remaining > 0);
+  const open = rows.filter((r) => r.status === "unpaid" && r.remaining > 0);
   const total = open.reduce((a, r) => a + r.remaining, 0);
   const sheet: XSheet = {
     name: "غير المدفوعين",
