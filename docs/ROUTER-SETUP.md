@@ -127,13 +127,16 @@ working; «متابعة الفصل» in the app lets it continue.
 | `not enough permissions` | script policy | add **write** (§3) |
 | `call B failed` | network, or report over 60 KB | check the log line before it; tell Claude the count |
 
-## 5. Schedule every 10 minutes (after the manual run passes)
+## 5. Schedule every 5 minutes (after the manual run passes)
 
 ```
-/system scheduler add name=tahseel-sync interval=10m start-time=startup policy=read,test on-event="/system script run tahseel-sync"
+/system scheduler add name=tahseel-sync interval=5m start-time=startup policy=read,test on-event="/system script run tahseel-sync"
 ```
 (use `policy=read,write,test` if you had to add write in §3). Check: `/system scheduler print where name="tahseel-sync"`.
-A payment is reflected within one run (≤ 10 min).
+A payment is reflected on the next run: ≤ 5 min after the payment syncs, so re-enable is within the 10-minute rule
+even if one run fails. The router-down alert stays at "not seen for > 15 minutes" (≈ 3 missed runs).
+A run should take seconds; time the manual run in §4 (log timestamps of the first and last `tahseel` lines) — if it
+ever approaches 5 minutes, tell Claude before keeping this interval.
 
 ## 6. Pause or remove
 

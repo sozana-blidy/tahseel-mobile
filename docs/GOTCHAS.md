@@ -50,3 +50,14 @@
 - 2026-11-16: Edge Function `index.ts` is Deno (npm:/jsr: imports) → excluded from `tsc` in tsconfig.json; its pure logic lives in `logic.ts` (type-checked + vitest).
 - 2026-11-16: Paying a carried (deferred) invoice writes TWO payment rows: client_key and client_key + ':carried'. Idempotency checks both keys.
 - 2026-11-16: Late-payment DB tests use months relative to now() (payments are stamped with now()), not the fixed test month.
+- 2026-11-16: Router automation — the billing month must be opened (فواتير صادرة) BEFORE the eve-warning day, otherwise no 20:00 warning and no disconnects (no invoices → no candidates; after the cutoff the server logs «لم يُفتح شهر» and does nothing).
+- 2026-11-16: Supabase SQL Editor shows/exports only the first 100 rows unless the query has its own `limit` — an export silently cut at 100 rows. Add `limit 5000` to every export query.
+- 2026-11-16: `cutoff_day` drives BOTH the automatic-disconnect cutoff AND batch 2's late-payment alerts. Changing it in the dry-run settings moves both (and restarts this month's test cycle).
+- 2026-11-16: Expect a sanity hold on the first real cutoff if most subscribers haven't paid by the 25th (the dry-run simulation with everyone unpaid = 94% → hold). It is the guard working; «متابعة الفصل» continues.
+- 2026-11-16: RouterOS `/ppp secret find name=` is case-SENSITIVE; the server returns the exact stored username, so app usernames must match the router spelling exactly (DB matching stays case-insensitive).
+- 2026-11-16: RouterOS `/tool fetch`: `check-certificate` defaults to NO — always pass `check-certificate=yes`. The built-in trust store (`/certificate settings builtin-trust-store`, default includes fetch) avoids importing CAs. `output=user` and `http-data` are capped at 64 KB.
+- 2026-11-16: RouterOS `:serialize to=json` may turn a one-item list into a lone object — `_router_sync` accepts both for `obs`.
+- 2026-11-16: The read-only scanner forbids `:parse`/`:execute`/`/import`/`script run` too — otherwise a forbidden command could be built as a string at run time and slip past a text scan.
+- 2026-11-16: RouterOS `/export` wraps long lines with a trailing `\` + newline + indent — join them before parsing `name=` / `disabled=yes`.
+- 2026-11-16: Local DB tests on Windows: `pg_ctl start | Out-Null` in PowerShell hangs forever (postgres inherits the pipe). Start pg_ctl without piping; stopping the shell task also kills the server.
+- 2026-11-16: Git Bash heredocs can mangle backslashes in Python regexes — write helper scripts with the editor, not `cat <<EOF`.
