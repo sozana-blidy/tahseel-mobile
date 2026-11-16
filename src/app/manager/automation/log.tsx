@@ -103,7 +103,7 @@ export default function AutomationLog() {
         }
         ListEmptyComponent={
           days.data && days.data.length === 0 ? (
-            <Empty text="لا يوجد سجل بعد. يظهر هنا ما يفعله السيرفران كل 10 دقائق بعد تركيب السكربت." />
+            <Empty text="لا يوجد سجل بعد. يظهر هنا ما يفعله السيرفران كل 5 دقائق بعد تركيب السكربت." />
           ) : list.data ? (
             <Empty text="لا سطور بهذا الفلتر" />
           ) : undefined
